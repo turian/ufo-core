@@ -1,0 +1,343 @@
+import hmac
+from base64 import b32encode
+from dataclasses import dataclass, field
+from dataclasses import replace as dataclasses_replace
+from hashlib import sha256
+from re import compile as re_compile
+from urllib.parse import quote, unquote
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from ufo.sdk.audience import Audience, conversation_audience, foreign_room_audience, room_audience
+from ufo.sdk.surfaces import (
+    AskUserInput,
+    ConnectRequest,
+    CredentialRequest,
+    Writeback,
+)
+
+SURFACE_NAME = "matrix"
+HOMESERVER_ENV = "MATRIX_HOMESERVER"
+BOT_TOKEN_ENV = "MATRIX_BOT_TOKEN"
+CLAIM_TTL_SECONDS = 15 * 60
+MAX_ARTIFACT_UPLOAD_BYTES = 50 * 1024 * 1024
+AMBIENT_DIGEST_LIMIT = 8
+PROOF_CODE_LENGTH = 8
+PERMALINK_BASE = "https://matrix.to"
+POST_TXN_PREFIX = "ufo-post-"
+ATTACH_TXN_PREFIX = "ufo-attach-"
+SPEAK_TXN_PREFIX = "ufo-mid-"
+CLAIM_PROOF_MESSAGE = "ufo.matrix.claim"
+PROOF_TOKEN_RE = re_compile(r"\b([a-z2-7]{8})\b")
+MATRIX_TO_PILL_RE = re_compile(r"https://matrix\.to/#/([^\"'<>\s?]+)")
+MESSAGE_TYPE = "m.room.message"
+STATE_EVENT_TYPES = frozenset(
+    {"m.room.create", "m.room.member", "m.room.name", "m.room.canonical_alias"}
+)
+MEMBERSHIP_JOINED = "join"
+MEMBERSHIP_INVITED = "invite"
+CONTENT_EXTRA_KEY = "content"
+
+
+def claim_proof_code(bot_token: str, room_id: str, member_id: UUID) -> str:
+    """The eight characters the claiming member sends in the room to prove the claim: keyed by
+    the bot token, the room, and the member, so its possession is the proof and it never leaves
+    the deriving deploy."""
+    digest = hmac.new(
+        bot_token.encode(),
+        f"{CLAIM_PROOF_MESSAGE}|{room_id}|{member_id}".encode(),
+        sha256,
+    ).digest()
+    return b32encode(digest)[:PROOF_CODE_LENGTH].decode().lower()
+
+
+def proof_matches(body: str, bot_token: str, room_id: str, member_id: UUID) -> bool:
+    """Whether a room message carries the claim's proof as a whole token: case-insensitively, so
+    a client that upper-cases it still proves, and never as a fragment of other words."""
+    code = claim_proof_code(bot_token, room_id, member_id)
+    return any(match.group(1) == code for match in PROOF_TOKEN_RE.finditer(body.casefold()))
+
+
+def room_key(room_id: str) -> str:
+    """A room id with its colon percent-encoded: the audience key grammar takes no colon and
+    the encoding is reversible, so the conversation key and the audience name one record."""
+    return room_id.replace(":", "%3A")
+
+
+def matrix_permalink(room_id: str, event_id: str) -> str:
+    return f"{PERMALINK_BASE}/#/{quote(room_id, safe='')}/{quote(event_id, safe='')}"
+
+
+class Mentions(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    user_ids: tuple[str, ...] = ()
+
+
+class MediaInfo(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    size: int | None = None
+    filename: str | None = None
+
+
+class MessageContent(BaseModel):
+    """One room message's content, typed at the fields the surface reads and open at the rest,
+    since homeservers carry extensions the spec leaves to clients."""
+
+    model_config = ConfigDict(extra="allow")
+
+    msgtype: str | None = None
+    body: str = ""
+    url: str | None = None
+    info: MediaInfo | None = None
+    formatted_body: str | None = None
+    mentions: Mentions | None = Field(default=None, alias="m.mentions")
+
+
+class SyncEvent(BaseModel):
+    """One raw /sync event: the fields every kind carries, the rest — each event's `content` in
+    its own grammar — open."""
+
+    model_config = ConfigDict(extra="allow")
+
+    event_id: str
+    type: str
+    sender: str | None = None
+    state_key: str | None = None
+    origin_server_ts: int = 0
+
+
+class SyncEventList(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    events: tuple[SyncEvent, ...] = ()
+
+
+class SyncRoom(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    state: SyncEventList = Field(default_factory=SyncEventList)
+    timeline: SyncEventList = Field(default_factory=SyncEventList)
+
+
+class SyncRooms(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    invite: dict[str, SyncRoom] = {}
+    join: dict[str, SyncRoom] = {}
+    leave: dict[str, SyncRoom] = {}
+
+
+class SyncBatch(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    next_batch: str
+    rooms: SyncRooms = Field(default_factory=SyncRooms)
+
+
+@dataclass(frozen=True)
+class RoomState:
+    """A room as one listener has observed it: each member's latest membership, what each member
+    has called themselves, and the latest name and alias. Every field is bounded by the room's
+    own roster, so a room outlives the events that named it."""
+
+    id: str
+    members: dict[str, str] = field(default_factory=dict)
+    displaynames: dict[str, str] = field(default_factory=dict)
+    name: str | None = None
+    alias: str | None = None
+    creator: str | None = None
+
+
+@dataclass(frozen=True)
+class InboundMessage:
+    """One room message the bot's account did not send."""
+
+    room_id: str
+    event_id: str
+    sender: str
+    content: MessageContent
+
+
+def _event_content(event: SyncEvent) -> dict[str, object]:
+    extra = event.model_extra or {}
+    content = extra.get(CONTENT_EXTRA_KEY)
+    return content if isinstance(content, dict) else {}
+
+
+def _membership(event: SyncEvent) -> str | None:
+    value = _event_content(event).get("membership")
+    return value if isinstance(value, str) else None
+
+
+def _string_content(event: SyncEvent, field_name: str) -> str | None:
+    value = _event_content(event).get(field_name)
+    return value if isinstance(value, str) and value else None
+
+
+def room_state_from_events(room_id: str, events: tuple[SyncEvent, ...]) -> RoomState:
+    return amend_room_state(RoomState(id=room_id), events)
+
+
+def amend_room_state(state: RoomState, events: tuple[SyncEvent, ...]) -> RoomState:
+    for event in events:
+        state = _apply_state_event(state, event)
+    return state
+
+
+def _apply_state_event(state: RoomState, event: SyncEvent) -> RoomState:
+    match event.type:
+        case "m.room.member":
+            if event.state_key is None:
+                return state
+            membership = _membership(event)
+            if membership is None:
+                return state
+            replaced = dataclasses_replace(
+                state, members={**state.members, event.state_key: membership}
+            )
+            displayname = _string_content(event, "displayname")
+            if displayname is None:
+                return replaced
+            return dataclasses_replace(
+                replaced, displaynames={**state.displaynames, event.state_key: displayname}
+            )
+        case "m.room.name":
+            name = _string_content(event, "name")
+            return state if name is None else dataclasses_replace(state, name=name)
+        case "m.room.create":
+            return (
+                state if event.sender is None else dataclasses_replace(state, creator=event.sender)
+            )
+        case "m.room.canonical_alias":
+            alias = _string_content(event, "alias")
+            return state if alias is None else dataclasses_replace(state, alias=alias)
+        case _:
+            return state
+
+
+def room_state_events(events: tuple[SyncEvent, ...]) -> tuple[SyncEvent, ...]:
+    return tuple(event for event in events if event.type in STATE_EVENT_TYPES)
+
+
+def room_participants(state: RoomState) -> frozenset[str]:
+    """The room's current members: the joiners and the invited, each under its latest state, the
+    leavers dropped with it."""
+    return frozenset(
+        member
+        for member, membership in state.members.items()
+        if membership in (MEMBERSHIP_JOINED, MEMBERSHIP_INVITED)
+    )
+
+
+def is_direct_message(state: RoomState, sender: str, bot_id: str) -> bool:
+    """The room is the two of them: the bot and the speaker, nobody else."""
+    return room_participants(state) - {bot_id} == {sender}
+
+
+def sender_display_name(state: RoomState, sender: str) -> str:
+    return state.displaynames.get(sender, sender)
+
+
+def mentions_bot(content: MessageContent, bot_id: str) -> bool:
+    """An explicit address to the bot: the `m.mentions` user list the clients attach, or a
+    matrix.to pill naming the account in the formatted body, percent-encoded or not — never a word
+    match on the plain text."""
+    if content.mentions is not None and bot_id in content.mentions.user_ids:
+        return True
+    if content.formatted_body is None:
+        return False
+    return any(
+        unquote(match.group(1)) == bot_id
+        for match in MATRIX_TO_PILL_RE.finditer(content.formatted_body)
+    )
+
+
+def room_label(state: RoomState) -> str:
+    if state.alias:
+        return state.alias
+    if state.name:
+        return state.name
+    return f"Matrix room {state.id}"
+
+
+def audience_for(state: RoomState, sender: str, bot_id: str, member_id: UUID | None) -> Audience:
+    """The conversation one room message answers into: a linked member's DM is theirs alone; a
+    room is the shared room audience; a room anyone outside it reached from another server seals
+    as foreign before it is admitted."""
+    if member_id is not None and is_direct_message(state, sender, bot_id):
+        return conversation_audience(member_id)
+    if any_participant_is_foreign(state, bot_id):
+        return foreign_room_audience(SURFACE_NAME, room_key(state.id))
+    return room_audience(SURFACE_NAME, room_key(state.id))
+
+
+def any_participant_is_foreign(state: RoomState, bot_id: str) -> bool:
+    """Whether anyone but the bot is from a server other than the creator's. Room ids from
+    version 12 on name no server, so the creator is the room's home; unknown, the room seals."""
+    if state.creator is None:
+        return True
+    home = state.creator.partition(":")[2]
+    return any(
+        member != bot_id and member.partition(":")[2] != home for member in room_participants(state)
+    )
+
+
+def ambient_digest(messages: tuple[str, ...]) -> str:
+    return "\n".join(messages[-AMBIENT_DIGEST_LIMIT:])
+
+
+def inbound_messages_from_events(
+    room_id: str, events: tuple[SyncEvent, ...]
+) -> tuple[InboundMessage, ...]:
+    messages = []
+    for event in events:
+        if event.type != MESSAGE_TYPE or event.sender is None:
+            continue
+        messages.append(
+            InboundMessage(
+                room_id=room_id,
+                event_id=event.event_id,
+                sender=event.sender,
+                content=MessageContent.model_validate(_event_content(event)),
+            )
+        )
+    return tuple(messages)
+
+
+def question_lines(question: AskUserInput) -> tuple[str, ...]:
+    lines = [question.title]
+    for index, item in enumerate(question.questions, start=1):
+        lines.append(f"{index}. {item.question}")
+        if item.options is not None and item.free_text_only is not True:
+            for number, option in enumerate(item.options, start=1):
+                detail = f" — {option.description}" if option.description else ""
+                lines.append(f"   {number}) {option.label}{detail}")
+            lines.append("Reply with your choice.")
+        else:
+            lines.append("Reply with your answer.")
+    return tuple(lines)
+
+
+def connect_notice(request: ConnectRequest, home: str | None) -> str:
+    where = f" Open {home}" if home else " Open the portal"
+    return f"To connect {request.provider}{where} and approve the request."
+
+
+def credential_notice(request: CredentialRequest, home: str | None) -> str:
+    where = f" {home}" if home else ""
+    return f"Private input needed: {request.reason}. Send the values in the portal{where}."
+
+
+def render_terminal(writeback: Writeback, home: str | None) -> str:
+    parts = [writeback.terminal.text]
+    terminal = writeback.terminal
+    if terminal.question is not None:
+        parts.append("\n".join(question_lines(terminal.question)))
+    if terminal.connect_request is not None:
+        parts.append(connect_notice(terminal.connect_request, home))
+    if terminal.credential_request is not None:
+        parts.append(credential_notice(terminal.credential_request, home))
+    return "\n\n".join(part for part in parts if part)

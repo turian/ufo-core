@@ -64,6 +64,7 @@ flags_open = "ufo_ext_flags_open:manifest"
 gbrain = "ufo_ext_gbrain.manifest:manifest"
 index_default = "ufo_ext_index_default:manifest"
 keyed_connectors = "ufo_ext_keyed_connectors:manifest"
+matrix = "ufo_ext_matrix.manifest:manifest"
 mcp = "ufo_ext_mcp:manifest"
 memory = "ufo_ext_memory.manifest:manifest"
 monitors = "ufo_ext_monitors.manifest:manifest"
@@ -130,6 +131,7 @@ packages = [
     "extensions/debugger/ufo_ext_debugger",
     "extensions/documents/ufo_ext_documents",
     "extensions/gbrain/ufo_ext_gbrain",
+    "extensions/matrix/ufo_ext_matrix",
     "extensions/memory/ufo_ext_memory",
     "extensions/monitors/ufo_ext_monitors",
     "extensions/pipedream/ufo_ext_pipedream",
