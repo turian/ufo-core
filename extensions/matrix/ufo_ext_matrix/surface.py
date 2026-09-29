@@ -82,12 +82,13 @@ def matrix_boot(store: BlobStore) -> None:
     """The fleet store the surface keeps its crypto state under, stashed for the runtime the
     listener and the deliveries share. An unkeyed deploy stashes nothing and runs as the
     plaintext surface this always was."""
-    global _boot_store
+    global _boot_store, _runtime
     try:
         deploy_settings()
     except ValueError:
         return
     _boot_store = store
+    _runtime = None
 
 
 async def e2ee_runtime() -> CryptoRuntime | None:

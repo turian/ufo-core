@@ -30,6 +30,7 @@ import json
 import socket
 import subprocess
 import time
+from base64 import b64encode
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing
 from dataclasses import dataclass, field, replace
@@ -42,13 +43,24 @@ import sqlalchemy as sa
 from fastapi import FastAPI
 from ufo_ext_context_rollover.manifest import manifest as rollover_manifest
 from ufo_ext_matrix.client import DeploySettings, MatrixClient
+from ufo_ext_matrix.crypto import CryptoRuntime, canonical_json
 from ufo_ext_matrix.manifest import manifest as matrix_manifest
-from ufo_ext_matrix.wire import SyncRooms, claim_proof_code
+from ufo_ext_matrix.surface import _consume_to_device
+from ufo_ext_matrix.wire import (
+    ENCRYPTED_MESSAGE_TYPE,
+    MEGOLM_ALGORITHM,
+    OLM_ALGORITHM,
+    ROOM_KEY_EVENT_TYPE,
+    SyncBatch,
+    SyncRooms,
+    claim_proof_code,
+    encrypted_room_events,
+)
 from ufo_testsupport.invoker import invoker_factory
 from ufo_testsupport.plugin import integration_dependency_available
 from ufo_testsupport.surfaces import UNREACHED_AMBIENT_REPLY, no_member_skills
 
-from ufo.blob import FilesystemBlobStore, WorkspaceBlobStore
+from ufo.blob import FilesystemBlobStore, FleetBlobStore, WorkspaceBlobStore
 from ufo.config import Config
 from ufo.db import workspace_tx
 from ufo.harness.durability import replay_safe_client
@@ -79,6 +91,8 @@ from ufo.runtime.workspace import ws
 from ufo.schema import tables
 from ufo.schema.records import Usage
 from ufo.serve import _mount_shared_surfaces
+
+GroupSession = pytest.importorskip("vodozemac").GroupSession
 
 pytestmark = pytest.mark.docker
 
@@ -415,6 +429,8 @@ async def stack(
         skills=skill_registry(()),
         member_skill_listing=no_member_skills,
     )
+    for boot in app.state.surface_boots:
+        boot(FleetBlobStore(backend=blob.backend))
     runners = tuple(app.state.surface_listeners)
     listeners = [asyncio.create_task(runner.run()) for runner in runners]
     tasks: list[asyncio.Task[None]] = []
@@ -431,12 +447,132 @@ async def stack(
     loop_queue.reset_runtime()
 
 
-async def _create_room(user: MatrixUser) -> str:
+@dataclass
+class MemberCrypto:
+    """The room's other end as a real client — the member device that encrypts: its own Olm
+    identity over its own store, driving the same MatrixClient and the same to-device consumer
+    the surface drives, so both ends of the room are the production code."""
+
+    user: MatrixUser
+    bot_user_id: str
+    runtime: CryptoRuntime
+    sync_token: str | None = None
+
+    @classmethod
+    async def start(cls, user: MatrixUser, bot_user_id: str, root: Path) -> "MemberCrypto":
+        runtime = await CryptoRuntime.load(
+            FleetBlobStore(backend=FilesystemBlobStore(root=root)), user.token
+        )
+        await runtime.publish(user.client(), user.user_id, 0)
+        return cls(user, bot_user_id, runtime)
+
+    async def sync(self) -> SyncBatch:
+        batch = await self.user.client().sync(self.sync_token)
+        self.sync_token = batch.next_batch
+        await _consume_to_device(self.runtime, batch.to_device.events)
+        return batch
+
+    async def share_room_key(self, room_id: str, group: GroupSession) -> None:
+        async def _bot_keys_visible() -> bool:
+            devices = await self.user.client().keys_query((self.bot_user_id,))
+            return bool(devices.get(self.bot_user_id))
+
+        await _wait_for(
+            _bot_keys_visible, "the bot's device keys are published", TURN_TIMEOUT_S
+        )
+        devices = (await self.user.client().keys_query((self.bot_user_id,)))[self.bot_user_id]
+        payload = {
+            "type": ROOM_KEY_EVENT_TYPE,
+            "content": {
+                "algorithm": MEGOLM_ALGORITHM,
+                "room_id": room_id,
+                "session_id": group.session_id,
+                "session_key": group.session_key.to_base64(),
+            },
+        }
+        messages: dict[str, dict[str, object]] = {}
+        for device_id, device_keys in devices.items():
+            device = await self.runtime.pin(
+                self.bot_user_id, device_id, device_keys.get("keys", {})
+            )
+            if device is None:
+                continue
+            claimed = await self.user.client().keys_claim(
+                {self.bot_user_id: {device_id: "signed_curve25519"}}
+            )
+            one_time = claimed.get(self.bot_user_id, {}).get(device_id)
+            if not one_time:
+                continue
+            session = self.runtime.olm_session_to(
+                device.curve25519, next(iter(one_time.values()))
+            )
+            tag, raw = session.encrypt(canonical_json(payload)).to_parts()
+            messages.setdefault(self.bot_user_id, {})[device_id] = {
+                "algorithm": OLM_ALGORITHM,
+                "sender_key": self.runtime.curve25519,
+                "ciphertext": {
+                    device.curve25519: {"type": tag, "body": b64encode(raw).decode()}
+                },
+            }
+        await self.user.client().send_to_device(
+            ENCRYPTED_MESSAGE_TYPE, f"member-key-{group.session_id}", messages
+        )
+
+    def encrypted_content(self, group: GroupSession, body: str) -> dict[str, object]:
+        return {
+            "algorithm": MEGOLM_ALGORITHM,
+            "sender_key": self.runtime.curve25519,
+            "ciphertext": group.encrypt(
+                canonical_json({"msgtype": "m.text", "body": body})
+            ).to_base64(),
+            "session_id": group.session_id,
+            "device_id": "MEMBER",
+        }
+
+    async def send_encrypted(
+        self, room_id: str, txn_id: str, group: GroupSession, body: str
+    ) -> str:
+        return await self.user.client().send(
+            room_id,
+            txn_id,
+            self.encrypted_content(group, body),
+            event_type=ENCRYPTED_MESSAGE_TYPE,
+        )
+
+    async def decrypted_bodies(self, room_id: str) -> tuple[str, ...]:
+        room = (await self.sync()).rooms.join.get(room_id)
+        if room is None:
+            return ()
+        bodies = []
+        for _event, content in encrypted_room_events(room.timeline.events):
+            payload = await self.runtime.decrypt_megolm(
+                room_id, content.session_id or "", content.ciphertext
+            )
+            if payload is not None and isinstance(payload.get("body"), str):
+                bodies.append(payload["body"])
+        return tuple(bodies)
+
+
+async def _create_room(user: MatrixUser, encrypted: bool = False) -> str:
     async with httpx.AsyncClient(base_url=user.homeserver, timeout=30.0) as api:
         response = await api.post(
             "/_matrix/client/v3/createRoom",
             headers={"Authorization": f"Bearer {user.token}"},
-            json={"preset": "private_chat"},
+            json={
+                "preset": "private_chat",
+                **(
+                    {
+                        "initial_state": [
+                            {
+                                "type": "m.room.encryption",
+                                "content": {"algorithm": "m.megolm.v1.aes-sha2"},
+                            }
+                        ]
+                    }
+                    if encrypted
+                    else {}
+                ),
+            },
         )
         response.raise_for_status()
     return response.json()["room_id"]
@@ -563,6 +699,69 @@ async def test_a_claimed_room_is_proven_and_replies_end_to_end(stack: Stack) -> 
         return "hi there" in await _room_bodies(stack.member, room_id)
 
     await _wait_for(_replied, "the agent's reply landed in the room", TURN_TIMEOUT_S)
+
+
+async def test_an_encrypted_room_round_trips_end_to_end(
+    stack: Stack, tmp_path: Path
+) -> None:
+    """The full E2EE chain against a real homeserver: the member's device mints the room's
+    megolm session and olm's its key to the bot's published device, the listener decrypts the
+    proof and the message, the reply goes back megolm-encrypted, and the member's device opens
+    it — while the raw wire carries no plaintext of either side."""
+    script = stack.seed
+    room_id = await _create_room(stack.member, encrypted=True)
+    stack.scripted.room_id = room_id
+
+    admission = Admission(dbos=loop_queue._runtime.dbos, durable_surfaces=frozenset())
+    admitted = await MemberAdmission(admission=admission, workspace_id=script.workspace_id).admit(
+        script.conversation_id,
+        f"connect the matrix room {room_id} for me",
+        speaker_member_id=script.member_id,
+    )
+    terminal: Terminal | None = None
+    with ws(script.workspace_id):
+        async with aclosing(tail_frames(stack.hub, admitted.turn_id)) as frames:
+            async for _cursor, frame in frames:
+                match frame:
+                    case Terminal() as last:
+                        terminal = last
+                        break
+    assert terminal is not None
+    assert terminal.frame.status == "done", terminal.frame.error_message
+    code = claim_proof_code(stack.bot.token, room_id, script.member_id)
+
+    await _invite(stack.member, room_id, stack.bot.user_id)
+
+    async def _joined() -> bool:
+        rooms = await stack.bot.sync_rooms()
+        return rooms.join.get(room_id) is not None
+
+    await _wait_for(_joined, "bot joined the room after the invite", TURN_TIMEOUT_S)
+
+    member_crypto = await MemberCrypto.start(
+        stack.member, stack.bot.user_id, tmp_path / "member-store"
+    )
+    group = GroupSession()
+    await member_crypto.share_room_key(room_id, group)
+    await member_crypto.send_encrypted(room_id, "proof", group, code)
+    await _wait_for(
+        lambda: _address_proven(script, room_id),
+        "the encrypted proof confirmed the address",
+        TURN_TIMEOUT_S,
+    )
+
+    await member_crypto.send_encrypted(
+        room_id, "hello", group, "hello from the encrypted room"
+    )
+
+    async def _decrypted() -> bool:
+        return "hi there" in await member_crypto.decrypted_bodies(room_id)
+
+    await _wait_for(_decrypted, "the agent's reply landed decrypted", TURN_TIMEOUT_S)
+
+    plain = await _room_bodies(stack.member, room_id)
+    assert "hi there" not in plain
+    assert "hello from the encrypted room" not in plain
 
 
 async def _turn_keys(seed: Seed) -> tuple[str, ...]:

@@ -1155,6 +1155,23 @@ workspace. Surface identities and conversation keys include
 `workspace_id`. Durable writeback enumerates a bounded set of workspace ids through the owner
 connection, then binds each before reading or delivering any tenant data.
 
+**A surface that speaks an encrypted provider protocol keeps one deploy-scoped identity, and the
+fleet store's `surface/` namespace is its home** — `SurfaceSpec.boot` is handed the store, and the
+listener lease is the single writer; deliveries and other replicas hold the same process-built
+runtime read-only. The matrix surface is the case, and its trust model: the deploy's Olm device —
+the account pickled under that namespace — is the trust anchor, and whoever holds its pickle reads
+everything the device can. Member devices are trusted on first use, their fingerprints pinned in
+surface state; a device whose keys change is refused from then on, with no cross-signing or SAS
+verification. Losing the account pickle is losing the device: re-keying mints a new one, past
+encrypted history stays unreadable, and members re-prove through the existing claim flow.
+Encryption changes transport only — audience rules, the address fence, and metering are the
+plaintext surface's. An outbound megolm session is minted per send and its key olm-encrypted to
+every pinned member device, because deliveries run on any replica and a shared ratchet would
+ratchet from many writers at once; a redriven delivery reuses the transaction id, so the
+homeserver answers the event it already made. Without the crypto backend installed the surface
+runs plaintext rooms only and warns at the first encrypted event it sees; it never sends plaintext
+into a room it reads as encrypted.
+
 Onboarding flow engine is core (steps are contributed by extensions/packs). `Provisioning.seat`
 (`runtime/provisioning.py`) is the one write that founds a workspace: `ufoctl init` and
 `DeployContext.provision` both call it. It creates the first admin and the main agent, seats a
@@ -1374,6 +1391,7 @@ bundle installs OSS, on-prem, or hosted.
 | GitHub / Asana / Google Ads feed-sync sources | sources, credentials, auth_proxies (`direct`), deploy_keys |
 | Agent-guided education / onboarding | onboarding, tools |
 | Scheduled tasks (cron / one-time) | jobs, invoke, tools, requires (`memory_search`) |
+| Matrix (chat surface over a homeserver) | surfaces (`listen`, `post`, `attach`, `speak`, `boot`), tools, deploy_keys, E2EE surface state under the fleet store |
 | GH code review on PR | agent prompt, source trigger, coding subagent, GitHub connector |
 | Service self-improvement / bug-fixing from o11y | sources (o11y), jobs, trajectories.read, invoke (evals), agents.propose_change |
 | Security review | tools, subagents |

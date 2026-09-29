@@ -120,15 +120,21 @@ class MatrixClient:
         payload = await self._request("GET", f"{ALIAS_PATH}/{quote(room, safe='')}")
         return _require_string(payload, "room_id")
 
-    async def send(self, room_id: str, txn_id: str, content: dict[str, object]) -> str:
+    async def send(
+        self,
+        room_id: str,
+        txn_id: str,
+        content: dict[str, object],
+        event_type: str = "m.room.message",
+    ) -> str:
         """Send one room event under a transaction id: a re-send of the same transaction, while
         the homeserver keeps it (Synapse: 24 hours), returns the event the first send made, so a
         crashed and re-driven delivery says it once."""
-        payload = await self._request(
-            "PUT",
-            f"{ROOMS_PATH}/{quote(room_id, safe='')}/send/m.room.message/{quote(txn_id, safe='')}",
-            json_body=content,
+        path = (
+            f"{ROOMS_PATH}/{quote(room_id, safe='')}/send/"
+            f"{quote(event_type, safe='')}/{quote(txn_id, safe='')}"
         )
+        payload = await self._request("PUT", path, json_body=content)
         return _require_string(payload, "event_id")
 
     async def upload_media(self, data: bytes, media_type: str, filename: str) -> str:

@@ -10,6 +10,7 @@ from ufo_ext_matrix.client import MatrixClient
 from ufo_ext_matrix.state import CryptoState
 from ufo_ext_matrix.wire import (
     DEVICE_ID,
+    ENCRYPTED_MESSAGE_TYPE,
     MEGOLM_ALGORITHM,
     OLM_ALGORITHM,
     ROOM_KEY_EVENT_TYPE,
@@ -71,7 +72,7 @@ class CryptoRuntime:
         self._pickle_key = pickle_key
         self._pins = pins
         self._refused = set(refused)
-        self._olm: dict[str, list["Session"]] = {}
+        self._olm: dict[str, list[Session]] = {}
         self._inbound: dict[tuple[str, str], object | None] = {}
         self.encrypted_rooms: set[str] = set()
         self._published = False
@@ -353,7 +354,9 @@ class OutboundCrypto:
             "session_id": session_id,
             "device_id": DEVICE_ID,
         }
-        return await self.client.send(room_id, txn_id, event)
+        return await self.client.send(
+            room_id, txn_id, event, event_type=ENCRYPTED_MESSAGE_TYPE
+        )
 
     async def _devices(self, room_id: str) -> list[DeviceKeys]:
         members = await self.client.joined_members(room_id)
