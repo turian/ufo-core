@@ -162,7 +162,10 @@ async def test_listener_message_path_merges_plaintext_and_decrypted(tmp_path: Pa
     )
     secret = _room_event("e-secret", group, "closed words", member)
     lost = _room_event("e-lost", vodozemac.GroupSession(), "unreadable", member)
-    messages = await _inbound_messages(bot, ROOM_ID, (plain, secret, lost))
+    malformed = SyncEvent.model_validate(
+        {"event_id": "e-bad", "type": ENCRYPTED_MESSAGE_TYPE, "sender": "@member:hs.org"}
+    )
+    messages = await _inbound_messages(bot, ROOM_ID, (plain, secret, lost, malformed))
     assert [message.content.body for message in messages] == ["open words", "closed words"]
 
 

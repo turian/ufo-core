@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from ufo.sdk.o11y import log, log_error, warn
 from ufo.sdk.surfaces import (
     AMBIENT_HISTORY_MESSAGES,
@@ -403,7 +405,11 @@ async def _inbound_messages(
     messages = []
     for event in events:
         if event.type == ENCRYPTED_MESSAGE_TYPE:
-            content = EncryptedContent.model_validate(event_content(event))
+            try:
+                content = EncryptedContent.model_validate(event_content(event))
+            except ValidationError:
+                warn("matrix.message_undecryptable", room_id=room_id, event_id=event.event_id)
+                continue
             if content.algorithm != MEGOLM_ALGORITHM:
                 continue
             payload = await runtime.decrypt_megolm(
@@ -520,7 +526,7 @@ async def _admit_message(
     replay: bool,
 ) -> None:
     content = message.content
-    if not content.body and content.url is None:
+    if not content.body and content.url is None and content.file is None:
         return
     addressed = is_direct_message(state, message.sender, bot_id) or mentions_bot(content, bot_id)
     if not addressed and (
