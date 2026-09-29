@@ -1,6 +1,12 @@
 from ufo.sdk.manifest import Manifest
 from ufo.sdk.surfaces import SurfaceSpec
-from ufo_ext_matrix.surface import matrix_attach, matrix_listener, matrix_post, matrix_speak
+from ufo_ext_matrix.surface import (
+    matrix_attach,
+    matrix_boot,
+    matrix_listener,
+    matrix_post,
+    matrix_speak,
+)
 from ufo_ext_matrix.tools import MATRIX_ROOM_CONNECT_TOOL
 from ufo_ext_matrix.wire import BOT_TOKEN_ENV, HOMESERVER_ENV, SURFACE_NAME
 
@@ -21,6 +27,7 @@ def manifest() -> Manifest:
                 post=matrix_post,
                 attach=matrix_attach,
                 speak=matrix_speak,
+                boot=matrix_boot,
             ),
         ),
         tools=(MATRIX_ROOM_CONNECT_TOOL,),

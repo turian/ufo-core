@@ -18,6 +18,7 @@ from ufo.sdk.surfaces import (
 )
 
 SURFACE_NAME = "matrix"
+DEVICE_ID = "UFO"
 HOMESERVER_ENV = "MATRIX_HOMESERVER"
 BOT_TOKEN_ENV = "MATRIX_BOT_TOKEN"
 CLAIM_TTL_SECONDS = 15 * 60
@@ -241,19 +242,19 @@ class InboundMessage:
     content: MessageContent
 
 
-def _event_content(event: SyncEvent) -> dict[str, object]:
+def event_content(event: SyncEvent | ToDeviceEvent) -> dict[str, object]:
     extra = event.model_extra or {}
     content = extra.get(CONTENT_EXTRA_KEY)
     return content if isinstance(content, dict) else {}
 
 
 def _membership(event: SyncEvent) -> str | None:
-    value = _event_content(event).get("membership")
+    value = event_content(event).get("membership")
     return value if isinstance(value, str) else None
 
 
 def _string_content(event: SyncEvent, field_name: str) -> str | None:
-    value = _event_content(event).get(field_name)
+    value = event_content(event).get(field_name)
     return value if isinstance(value, str) and value else None
 
 
@@ -374,22 +375,25 @@ def ambient_digest(messages: tuple[str, ...]) -> str:
     return "\n".join(messages[-AMBIENT_DIGEST_LIMIT:])
 
 
+def inbound_message_from_event(room_id: str, event: SyncEvent) -> InboundMessage | None:
+    if event.type != MESSAGE_TYPE or event.sender is None:
+        return None
+    return InboundMessage(
+        room_id=room_id,
+        event_id=event.event_id,
+        sender=event.sender,
+        content=MessageContent.model_validate(event_content(event)),
+    )
+
+
 def inbound_messages_from_events(
     room_id: str, events: tuple[SyncEvent, ...]
 ) -> tuple[InboundMessage, ...]:
-    messages = []
-    for event in events:
-        if event.type != MESSAGE_TYPE or event.sender is None:
-            continue
-        messages.append(
-            InboundMessage(
-                room_id=room_id,
-                event_id=event.event_id,
-                sender=event.sender,
-                content=MessageContent.model_validate(_event_content(event)),
-            )
-        )
-    return tuple(messages)
+    return tuple(
+        message
+        for event in events
+        if (message := inbound_message_from_event(room_id, event)) is not None
+    )
 
 
 def encrypted_room_events(
@@ -402,7 +406,7 @@ def encrypted_room_events(
     for event in events:
         if event.type != ENCRYPTED_MESSAGE_TYPE or event.sender is None:
             continue
-        content = EncryptedContent.model_validate(_event_content(event))
+        content = EncryptedContent.model_validate(event_content(event))
         if content.algorithm == MEGOLM_ALGORITHM:
             pairs.append((event, content))
     return tuple(pairs)

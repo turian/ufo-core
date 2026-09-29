@@ -18,6 +18,11 @@ SYNC_PATH = f"{CLIENT_PATH_PREFIX}/sync"
 JOIN_PATH = f"{CLIENT_PATH_PREFIX}/join"
 ALIAS_PATH = f"{CLIENT_PATH_PREFIX}/directory/room"
 ROOMS_PATH = f"{CLIENT_PATH_PREFIX}/rooms"
+KEYS_UPLOAD_PATH = f"{CLIENT_PATH_PREFIX}/keys/upload"
+KEYS_QUERY_PATH = f"{CLIENT_PATH_PREFIX}/keys/query"
+KEYS_CLAIM_PATH = f"{CLIENT_PATH_PREFIX}/keys/claim"
+SEND_TO_DEVICE_PATH = f"{CLIENT_PATH_PREFIX}/sendToDevice"
+JOINED_MEMBERS_PATH = f"{CLIENT_PATH_PREFIX}/rooms"
 UPLOAD_PATH = "/_matrix/media/v3/upload"
 MEDIA_DOWNLOAD_PATH = "/_matrix/client/v1/media/download"
 MEDIA_CHUNK_BYTES = 64 * 1024
@@ -156,6 +161,68 @@ class MatrixClient:
                 await response.aclose()
         except httpx.TransportError as error:
             raise _transport_failure(error) from error
+
+    async def keys_upload(
+        self,
+        device_keys: dict[str, object] | None = None,
+        one_time_keys: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        """The device's identity keys and one-time keys to the server: identity once, OTKs on
+        every top-up — the pool a sender claims from to open an olm channel to this device."""
+        body: dict[str, object] = {}
+        if device_keys:
+            body["device_keys"] = device_keys
+        if one_time_keys:
+            body["one_time_keys"] = one_time_keys
+        return await self._request("POST", KEYS_UPLOAD_PATH, json_body=body)
+
+    async def keys_query(self, user_ids: tuple[str, ...]) -> dict[str, dict[str, dict]]:
+        """Each user's known devices and their published keys: user -> device -> device_keys."""
+        payload = await self._request(
+            "POST", KEYS_QUERY_PATH, json_body={"device_keys": {user: [] for user in user_ids}}
+        )
+        device_keys = payload.get("device_keys")
+        return device_keys if isinstance(device_keys, dict) else {}
+
+    async def keys_claim(self, requests: dict[str, dict[str, str]]) -> dict[str, dict[str, dict]]:
+        """One one-time key per requested device: user -> device -> {key_id: key} — a device
+        asked for and answered nothing simply has no entry."""
+        payload = await self._request(
+            "POST", KEYS_CLAIM_PATH, json_body={"one_time_keys": requests}
+        )
+        one_time_keys = payload.get("one_time_keys")
+        return one_time_keys if isinstance(one_time_keys, dict) else {}
+
+    async def send_to_device(
+        self, event_type: str, txn_id: str, messages: dict[str, dict[str, object]]
+    ) -> None:
+        await self._request(
+            "PUT",
+            f"{SEND_TO_DEVICE_PATH}/{quote(event_type, safe='')}/{quote(txn_id, safe='')}",
+            json_body={"messages": messages},
+        )
+
+    async def joined_members(self, room_id: str) -> tuple[str, ...]:
+        payload = await self._request(
+            "GET", f"{JOINED_MEMBERS_PATH}/{quote(room_id, safe='')}/joined_members"
+        )
+        joined = payload.get("joined")
+        return tuple(joined) if isinstance(joined, dict) else ()
+
+    async def room_encryption(self, room_id: str) -> str | None:
+        """The algorithm the room's `m.room.encryption` state names, or None — a room with no
+        encryption event and one with an unknown algorithm both read as no megolm here."""
+        try:
+            payload = await self._request(
+                "GET",
+                f"{ROOMS_PATH}/{quote(room_id, safe='')}/state/m.room.encryption",
+            )
+        except MatrixApiError as error:
+            if error.status == 404:
+                return None
+            raise
+        algorithm = payload.get("algorithm")
+        return algorithm if isinstance(algorithm, str) else None
 
     async def _request(
         self,
