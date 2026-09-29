@@ -409,12 +409,10 @@ class OutboundCrypto:
     ) -> None:
         if not devices:
             raise MatrixNoDevices(room_id)
-        claimed = await self.client.keys_claim(
-            {
-                device.user_id: {device.device_id: "signed_curve25519"}
-                for device in devices
-            }
-        )
+        requests: dict[str, dict[str, str]] = {}
+        for device in devices:
+            requests.setdefault(device.user_id, {})[device.device_id] = "signed_curve25519"
+        claimed = await self.client.keys_claim(requests)
         room_key = {
             "type": ROOM_KEY_EVENT_TYPE,
             "content": {
