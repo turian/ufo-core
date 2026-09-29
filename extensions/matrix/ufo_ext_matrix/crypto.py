@@ -103,12 +103,22 @@ class CryptoRuntime:
         state = CryptoState(store)
         key = pickle_key(bot_token)
         raw = await state.account()
-        account = (
-            vodozemac.Account.from_pickle(raw.decode(), key)
-            if raw is not None
-            else vodozemac.Account()
-        )
-        if raw is None:
+        try:
+            account = (
+                vodozemac.Account.from_pickle(raw.decode(), key)
+                if raw is not None
+                else None
+            )
+        except vodozemac.PickleException:
+            account = None
+        if account is None:
+            if raw is not None:
+                # The pickle no longer opens under this deploy's key: the token was rotated or
+                # the state was written by another deploy. The device is gone — re-key, and the
+                # sessions, pins, and cursor of the old device mean nothing.
+                await state.clear()
+                warn("matrix.crypto_rekeyed", device_id=device_id)
+            account = vodozemac.Account()
             await state.save_account(account.pickle(key).encode())
         envelope = json.loads(pins) if (pins := await state.pins()) else {}
         return cls(

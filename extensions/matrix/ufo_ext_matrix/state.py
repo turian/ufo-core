@@ -54,6 +54,12 @@ class CryptoState:
     async def save_since(self, since: bytes) -> None:
         await self._store.put(SINCE_KEY, since)
 
+    async def clear(self) -> None:
+        """Everything this surface owns, dropped — the re-key path, since sessions and pins and
+        the cursor of a dead device are worse than useless to its replacement."""
+        for entry in await self._store.list(f"{STATE_PREFIX}/"):
+            await self._store.delete(entry.key)
+
     async def _read(self, key: str) -> bytes | None:
         try:
             return await self._store.get(key)

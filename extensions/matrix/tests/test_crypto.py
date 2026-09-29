@@ -86,6 +86,17 @@ async def test_account_persists_across_restart(tmp_path: Path) -> None:
     assert again.ed25519 == first.ed25519
 
 
+async def test_a_token_rotation_rekeys_the_device(tmp_path: Path) -> None:
+    old = await _runtime(tmp_path, "old-token")
+    group = await _share_room_key(await _runtime(tmp_path / "member"), old, ROOM_ID)
+    assert len(group.session_id) > 0
+    fresh = await CryptoRuntime.load(_store(tmp_path), "rotated-token", "UFO")
+    assert fresh.curve25519 != old.curve25519
+    reloaded = await CryptoRuntime.load(_store(tmp_path), "rotated-token", "UFO")
+    assert reloaded.curve25519 == fresh.curve25519
+    assert await CryptoState(_store(tmp_path)).since() is None
+
+
 async def test_room_key_then_megolm_roundtrip(tmp_path: Path) -> None:
     bot = await _runtime(tmp_path / "bot")
     member = await _runtime(tmp_path / "member")
