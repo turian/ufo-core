@@ -32,7 +32,7 @@ async def matrix_room_connect(ctx: ToolContext, args: MatrixRoomConnectInput) ->
     settings = deploy_settings()
     client = MatrixClient(settings)
     try:
-        bot_id = await client.whoami()
+        bot_id = (await client.whoami()).user_id
         room_id = await client.resolve_room(args.room)
     finally:
         await client.aclose()
