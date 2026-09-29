@@ -401,7 +401,9 @@ async def matrix_listener(listener: SurfaceListenerContext) -> None:
             if runtime is not None:
                 await runtime.save_since(since)
     except Exception as error:
-        log_error("matrix.listener_bailed", error_class=type(error).__name__)
+        log_error(
+            "matrix.listener_bailed", error_class=type(error).__name__, detail=str(error)
+        )
         raise
     finally:
         await client.aclose()
