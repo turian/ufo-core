@@ -410,6 +410,8 @@ async def test_fleet_store_admits_only_fleet_namespaces(tmp_path: Path) -> None:
     await store.put("static/web/assets/index-abc123.js", b"js")
     await store.put("term/op/o1", b"payload")
     await store.put("apps/9f3a1c2b/radar/index.html", b"<!doctype html>")
+    await store.put("surface/matrix/matrix-e2ee/account", b"pickle bytes")
+    assert await store.get("surface/matrix/matrix-e2ee/account") == b"pickle bytes"
     assert await store.get("static/web/assets/index-abc123.js") == b"js"
     assert await backend.get("static/web/assets/index-abc123.js") == b"js"
     assert await store.get("apps/9f3a1c2b/radar/index.html") == b"<!doctype html>"
