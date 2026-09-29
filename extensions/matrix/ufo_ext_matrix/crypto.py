@@ -161,7 +161,7 @@ class CryptoRuntime:
         in one step, since an OTK claimed after a crash must decrypt to what the pickle says."""
         self._account.generate_one_time_keys(count)
         keys = {
-            f"signed_curve25519/{key_id}": key.to_base64()
+            f"signed_curve25519:{key_id}": key.to_base64()
             for key_id, key in self._account.one_time_keys.items()
         }
         self._account.mark_keys_as_published()
