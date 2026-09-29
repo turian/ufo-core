@@ -59,6 +59,17 @@ def proof_matches(body: str, bot_token: str, room_id: str, member_id: UUID) -> b
     return any(match.group(1) == code for match in PROOF_TOKEN_RE.finditer(body.casefold()))
 
 
+PICKLE_KEY_INFO = b"ufo.matrix.olm.pickle"
+PICKLE_KEY_BYTES = 32
+
+
+def pickle_key(bot_token: str) -> bytes:
+    """The key the Olm account pickles under, HKDF-derived from the bot token: the deploy key the
+    surface already holds is the only secret a deploy needs, and a rotated token re-keys."""
+    prk = hmac.new(b"", bot_token.encode(), sha256).digest()
+    return hmac.new(prk, PICKLE_KEY_INFO + b"\x01", sha256).digest()[:PICKLE_KEY_BYTES]
+
+
 def room_key(room_id: str) -> str:
     """A room id with its colon percent-encoded: the audience key grammar takes no colon and
     the encoding is reversible, so the conversation key and the audience name one record."""

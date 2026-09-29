@@ -15,6 +15,7 @@ from ufo_ext_matrix.wire import (
     is_direct_message,
     matrix_permalink,
     mentions_bot,
+    pickle_key,
     proof_matches,
     render_terminal,
     room_key,
@@ -78,6 +79,16 @@ def test_proof_code_is_deterministic_and_bounded() -> None:
     assert first != claim_proof_code("token", "!room:hs.org", OTHER)
     assert first != claim_proof_code("token", "!other:hs.org", MEMBER)
     assert first != claim_proof_code("other-token", "!room:hs.org", MEMBER)
+
+
+def test_pickle_key_is_deterministic_and_keyed() -> None:
+    assert pickle_key("token") == pickle_key("token")
+    assert len(pickle_key("token")) == 32
+    assert pickle_key("token") != pickle_key("other-token")
+    assert (
+        pickle_key("test-bot-token").hex()
+        == "bdf238a77af61ce8aebcc5ad44f90f3bb05debbc391205bfa6d6176f55b308ca"
+    )
 
 
 def test_proof_never_matches_a_fragment_or_wrong_proof() -> None:
