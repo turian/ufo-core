@@ -32,8 +32,19 @@ CLAIM_PROOF_MESSAGE = "ufo.matrix.claim"
 PROOF_TOKEN_RE = re_compile(r"\b([a-z2-7]{8})\b")
 MATRIX_TO_PILL_RE = re_compile(r"https://matrix\.to/#/([^\"'<>\s?]+)")
 MESSAGE_TYPE = "m.room.message"
+ENCRYPTED_MESSAGE_TYPE = "m.room.encrypted"
+ENCRYPTION_STATE_TYPE = "m.room.encryption"
+MEGOLM_ALGORITHM = "m.megolm.v1.aes-sha2"
+OLM_ALGORITHM = "m.olm.v1.curve25519-aes-sha2"
+ROOM_KEY_EVENT_TYPE = "m.room_key"
 STATE_EVENT_TYPES = frozenset(
-    {"m.room.create", "m.room.member", "m.room.name", "m.room.canonical_alias"}
+    {
+        "m.room.create",
+        "m.room.member",
+        "m.room.name",
+        "m.room.canonical_alias",
+        ENCRYPTION_STATE_TYPE,
+    }
 )
 MEMBERSHIP_JOINED = "join"
 MEMBERSHIP_INVITED = "invite"
@@ -93,6 +104,30 @@ class MediaInfo(BaseModel):
     filename: str | None = None
 
 
+class MediaKey(BaseModel):
+    """The AES key an encrypted attachment travels under, as the JWK the Matrix spec fixes."""
+
+    model_config = ConfigDict(extra="allow")
+
+    k: str
+    alg: str = "A256CTR"
+    ext: bool = True
+    kty: str = "oct"
+
+
+class EncryptedFile(BaseModel):
+    """One attachment sent inside the encrypted payload: the ciphertext's mxc address and the
+    material that decrypts it, both carried inside the megolm message, never in the clear."""
+
+    model_config = ConfigDict(extra="allow")
+
+    url: str
+    key: MediaKey
+    iv: str
+    hashes: dict[str, str] = {}
+    v: str = "2"
+
+
 class MessageContent(BaseModel):
     """One room message's content, typed at the fields the surface reads and open at the rest,
     since homeservers carry extensions the spec leaves to clients."""
@@ -102,9 +137,24 @@ class MessageContent(BaseModel):
     msgtype: str | None = None
     body: str = ""
     url: str | None = None
+    file: EncryptedFile | None = None
     info: MediaInfo | None = None
     formatted_body: str | None = None
     mentions: Mentions | None = Field(default=None, alias="m.mentions")
+
+
+class EncryptedContent(BaseModel):
+    """The payload an `m.room.encrypted` event carries. `ciphertext` is the megolm message for
+    room events; to-device olm events carry a per-recipient map instead, which the listener reads
+    straight off the event."""
+
+    model_config = ConfigDict(extra="allow")
+
+    algorithm: str
+    ciphertext: str = ""
+    sender_key: str | None = None
+    session_id: str | None = None
+    device_id: str | None = None
 
 
 class SyncEvent(BaseModel):
@@ -141,11 +191,29 @@ class SyncRooms(BaseModel):
     leave: dict[str, SyncRoom] = {}
 
 
+class ToDeviceEvent(BaseModel):
+    """One event addressed to the bot's account rather than a room — under encryption, the
+    channel olm sessions and megolm room keys arrive on. The `content` rides model_extra."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+    sender: str | None = None
+
+
+class SyncToDevice(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    events: tuple[ToDeviceEvent, ...] = ()
+
+
 class SyncBatch(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     next_batch: str
     rooms: SyncRooms = Field(default_factory=SyncRooms)
+    to_device: SyncToDevice = Field(default_factory=SyncToDevice)
+    device_one_time_keys_count: dict[str, int] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -160,6 +228,7 @@ class RoomState:
     name: str | None = None
     alias: str | None = None
     creator: str | None = None
+    encryption: str | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +294,11 @@ def _apply_state_event(state: RoomState, event: SyncEvent) -> RoomState:
         case "m.room.canonical_alias":
             alias = _string_content(event, "alias")
             return state if alias is None else dataclasses_replace(state, alias=alias)
+        case "m.room.encryption":
+            algorithm = _string_content(event, "algorithm")
+            return (
+                state if algorithm is None else dataclasses_replace(state, encryption=algorithm)
+            )
         case _:
             return state
 
@@ -316,6 +390,38 @@ def inbound_messages_from_events(
             )
         )
     return tuple(messages)
+
+
+def encrypted_room_events(
+    events: tuple[SyncEvent, ...],
+) -> tuple[tuple[SyncEvent, EncryptedContent], ...]:
+    """The room events the surface cannot read as sent: megolm ciphertexts, each paired with the
+    content that names the session able to open it. Olm-encrypted room events are not a thing the
+    surface speaks, and unknown algorithms are the server's problem, not ours."""
+    pairs = []
+    for event in events:
+        if event.type != ENCRYPTED_MESSAGE_TYPE or event.sender is None:
+            continue
+        content = EncryptedContent.model_validate(_event_content(event))
+        if content.algorithm == MEGOLM_ALGORITHM:
+            pairs.append((event, content))
+    return tuple(pairs)
+
+
+def inbound_message_from_decrypted(
+    room_id: str, event: SyncEvent, payload: dict[str, object]
+) -> InboundMessage | None:
+    """One decrypted megolm payload as the message the rest of the surface already knows: the
+    payload is whatever the sender encrypted — an `m.room.message`-shaped dict — and anything
+    that does not validate as one is a message the surface skips."""
+    if event.sender is None:
+        return None
+    return InboundMessage(
+        room_id=room_id,
+        event_id=event.event_id,
+        sender=event.sender,
+        content=MessageContent.model_validate(payload),
+    )
 
 
 def question_lines(question: AskUserInput) -> tuple[str, ...]:

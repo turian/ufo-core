@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from ufo_ext_matrix.wire import (
     AMBIENT_DIGEST_LIMIT,
+    EncryptedContent,
     MessageContent,
     RoomState,
     SyncBatch,
@@ -11,6 +12,8 @@ from ufo_ext_matrix.wire import (
     any_participant_is_foreign,
     audience_for,
     claim_proof_code,
+    encrypted_room_events,
+    inbound_message_from_decrypted,
     inbound_messages_from_events,
     is_direct_message,
     matrix_permalink,
@@ -89,6 +92,72 @@ def test_pickle_key_is_deterministic_and_keyed() -> None:
         pickle_key("test-bot-token").hex()
         == "bdf238a77af61ce8aebcc5ad44f90f3bb05debbc391205bfa6d6176f55b308ca"
     )
+
+
+def test_encrypted_room_events_carry_megolm_content() -> None:
+    megolm = _event(
+        "e1",
+        "m.room.encrypted",
+        "@alice:hs.org",
+        algorithm="m.megolm.v1.aes-sha2",
+        ciphertext="AwgA",
+        sender_key="sk1",
+        session_id="sid1",
+        device_id="DEV",
+    )
+    olm = _event(
+        "e2", "m.room.encrypted", "@alice:hs.org", algorithm="m.olm.v1.curve25519-aes-sha2"
+    )
+    plain = _event("e3", "m.room.message", "@alice:hs.org", msgtype="m.text", body="hi")
+    pairs = encrypted_room_events((megolm, olm, plain))
+    assert [event.event_id for event, _ in pairs] == ["e1"]
+    assert pairs[0][1] == EncryptedContent(
+        algorithm="m.megolm.v1.aes-sha2", ciphertext="AwgA", sender_key="sk1", session_id="sid1",
+        device_id="DEV",
+    )
+
+
+def test_room_state_tracks_encryption_algorithm() -> None:
+    event = _event(
+        "e-enc",
+        "m.room.encryption",
+        "@alice:hs.org",
+        algorithm="m.megolm.v1.aes-sha2",
+    )
+    state = room_state_from_events("!room:hs.org", (event,))
+    assert state.encryption == "m.megolm.v1.aes-sha2"
+    assert room_state_events((event,)) == (event,)
+
+
+def test_decrypted_payload_becomes_inbound_message() -> None:
+    event = _event("e1", "m.room.encrypted", "@alice:hs.org")
+    message = inbound_message_from_decrypted(
+        "!room:hs.org",
+        event,
+        {"msgtype": "m.text", "body": "secret"},
+    )
+    assert message is not None
+    assert message.content.body == "secret"
+    assert message.sender == "@alice:hs.org"
+    unsigned = _event("e1", "m.room.encrypted", None)
+    assert inbound_message_from_decrypted("!room:hs.org", unsigned, {}) is None
+
+
+def test_sync_batch_carries_to_device_and_otk_count() -> None:
+    batch = SyncBatch.model_validate(
+        {
+            "next_batch": "s1",
+            "to_device": {
+                "events": [
+                    {"type": "m.room.encrypted", "sender": "@a:hs.org", "content": {}},
+                ],
+            },
+            "device_one_time_keys_count": {"signed_curve25519": 12},
+        }
+    )
+    assert batch.to_device.events[0].type == "m.room.encrypted"
+    assert batch.device_one_time_keys_count == {"signed_curve25519": 12}
+    assert SyncBatch.model_validate({"next_batch": "s1"}).to_device.events == ()
 
 
 def test_proof_never_matches_a_fragment_or_wrong_proof() -> None:
