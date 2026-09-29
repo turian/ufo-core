@@ -65,7 +65,7 @@ jobs:
           restore-keys: |
             mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
             mypy-${{ runner.os }}-
-      - run: uv sync
+      - run: uv sync --extra matrix-e2ee
       - run: make check
       - run: uv run pytest --collect-only -m integration -q
 
@@ -181,7 +181,7 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      - run: uv sync --no-install-package actionlint-py
+      - run: uv sync --extra matrix-e2ee --no-install-package actionlint-py
       - uses: actions/download-artifact@v4
         with:
           name: sandbox-client

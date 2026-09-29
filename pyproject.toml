@@ -45,6 +45,9 @@ dependencies = [
     "emoji>=2.15",
 ]
 
+[project.optional-dependencies]
+matrix-e2ee = ["vodozemac>=0.10"]
+
 [project.scripts]
 ufoctl = "ufo.cli:main"
 
