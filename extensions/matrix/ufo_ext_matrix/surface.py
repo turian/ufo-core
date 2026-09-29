@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -203,6 +204,51 @@ class _RoomWatch:
     history: tuple[AmbientMessage, ...] = ()
 
 
+def _watches_blob(watches: dict[str, _RoomWatch]) -> bytes:
+    return json.dumps(
+        {
+            room_id: {
+                "state": {
+                    "id": watch.state.id,
+                    "members": watch.state.members,
+                    "displaynames": watch.state.displaynames,
+                    "name": watch.state.name,
+                    "alias": watch.state.alias,
+                    "creator": watch.state.creator,
+                    "encryption": watch.state.encryption,
+                },
+                "history": [
+                    {"speaker": entry.speaker, "text": entry.text, "own": entry.own}
+                    for entry in watch.history
+                ],
+            }
+            for room_id, watch in watches.items()
+        }
+    ).encode()
+
+
+def _watches_from_blob(blob: bytes) -> dict[str, _RoomWatch]:
+    raw = json.loads(blob)
+    return {
+        room_id: _RoomWatch(
+            state=RoomState(
+                id=record["state"]["id"],
+                members=dict(record["state"].get("members", {})),
+                displaynames=dict(record["state"].get("displaynames", {})),
+                name=record["state"].get("name"),
+                alias=record["state"].get("alias"),
+                creator=record["state"].get("creator"),
+                encryption=record["state"].get("encryption"),
+            ),
+            history=tuple(
+                AmbientMessage(speaker=head["speaker"], text=head["text"], own=head["own"])
+                for head in record.get("history", ())
+            ),
+        )
+        for room_id, record in raw.items()
+    }
+
+
 @dataclass(frozen=True)
 class _InboundFile:
     key: str
@@ -359,6 +405,9 @@ async def matrix_listener(listener: SurfaceListenerContext) -> None:
         since: str | None = None
         if runtime is not None:
             since = await runtime.restore_since()
+            raw_watches = await runtime.restore_watches()
+            if raw_watches is not None and since is not None:
+                watches = _watches_from_blob(raw_watches)
         while True:
             try:
                 batch = await client.sync(since)
@@ -400,6 +449,7 @@ async def matrix_listener(listener: SurfaceListenerContext) -> None:
             since = batch.next_batch
             if runtime is not None:
                 await runtime.save_since(since)
+                await runtime.save_watches(_watches_blob(observed))
     except Exception as error:
         log_error(
             "matrix.listener_bailed", error_class=type(error).__name__, detail=str(error)

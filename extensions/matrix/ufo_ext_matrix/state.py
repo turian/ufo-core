@@ -6,6 +6,7 @@ STATE_PREFIX = "surface/matrix/matrix-e2ee"
 ACCOUNT_KEY = f"{STATE_PREFIX}/account"
 PINS_KEY = f"{STATE_PREFIX}/pins"
 SINCE_KEY = f"{STATE_PREFIX}/since"
+WATCHES_KEY = f"{STATE_PREFIX}/watches"
 
 
 def _olm_key(sender_key: str) -> str:
@@ -53,6 +54,12 @@ class CryptoState:
 
     async def save_since(self, since: bytes) -> None:
         await self._store.put(SINCE_KEY, since)
+
+    async def watches(self) -> bytes | None:
+        return await self._read(WATCHES_KEY)
+
+    async def save_watches(self, blob: bytes) -> None:
+        await self._store.put(WATCHES_KEY, blob)
 
     async def clear(self) -> None:
         """Everything this surface owns, dropped — the re-key path, since sessions and pins and

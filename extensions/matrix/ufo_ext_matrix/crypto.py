@@ -163,6 +163,12 @@ class CryptoRuntime:
         raw = await self._store.since()
         return raw.decode() if raw is not None else None
 
+    async def save_watches(self, blob: bytes) -> None:
+        await self._store.save_watches(blob)
+
+    async def restore_watches(self) -> bytes | None:
+        return await self._store.watches()
+
     async def save_since(self, since: str) -> None:
         await self._store.save_since(since.encode())
 
