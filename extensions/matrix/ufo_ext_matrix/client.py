@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from urllib.parse import quote
 
 import httpx
+from pydantic import BaseModel
 
 from ufo.sdk.credentials import deploy_env
 from ufo_ext_matrix.wire import (
@@ -54,6 +55,15 @@ class MatrixApiError(RuntimeError):
         return self.status is None or self.status == 429 or self.status >= 500
 
 
+class Whoami(BaseModel):
+    """`GET /account/whoami`: the account the token speaks for, and the device it is bound to —
+    the identity the E2EE keys upload under, since the homeserver refuses keys naming any other
+    device. A token that names no device cannot hold device keys."""
+
+    user_id: str
+    device_id: str
+
+
 @dataclass(frozen=True)
 class DeploySettings:
     homeserver: str
@@ -61,8 +71,9 @@ class DeploySettings:
 
 
 def deploy_settings() -> DeploySettings:
-    """The two deploy keys the provider account answers with, read at the call site so a deploy
-    that adds them later answers without a restart: missing is a mis-deployment, not a fallback."""
+    """The deploy keys the provider account answers with, read at the call site so a deploy
+    that adds them later answers without a restart: missing is a mis-deployment, not a fallback.
+    `MATRIX_DEVICE_ID` is optional: set when the token's device is not the account's only one."""
     homeserver = deploy_env(HOMESERVER_ENV)
     if homeserver is None:
         raise ValueError(f"matrix deploy key missing from the environment: {HOMESERVER_ENV}")
@@ -98,8 +109,9 @@ class MatrixClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def whoami(self) -> str:
-        return _require_string(await self._request("GET", WHOAMI_PATH), "user_id")
+    async def whoami(self) -> Whoami:
+        payload = await self._request("GET", WHOAMI_PATH)
+        return Whoami.model_validate(payload)
 
     async def sync(self, since: str | None) -> SyncBatch:
         """One long-poll: the server holds the request until a room changes or its timeout runs,

@@ -9,7 +9,6 @@ from ufo.sdk.surfaces import BlobStore
 from ufo_ext_matrix.client import MatrixClient
 from ufo_ext_matrix.state import CryptoState
 from ufo_ext_matrix.wire import (
-    DEVICE_ID,
     ENCRYPTED_MESSAGE_TYPE,
     MEGOLM_ALGORITHM,
     OLM_ALGORITHM,
@@ -64,12 +63,14 @@ class CryptoRuntime:
         store: CryptoState,
         account: "Account",
         pickle_key: bytes,
+        device_id: str,
         pins: dict[str, DeviceKeys],
         refused: frozenset[str],
     ) -> None:
         self._store = store
         self._account = account
         self._pickle_key = pickle_key
+        self.device_id = device_id
         self._pins = pins
         self._refused = set(refused)
         self._olm: dict[str, list[Session]] = {}
@@ -97,7 +98,7 @@ class CryptoRuntime:
 
     @classmethod
     async def load(
-        cls, store: BlobStore, bot_token: str
+        cls, store: BlobStore, bot_token: str, device_id: str
     ) -> "CryptoRuntime":
         state = CryptoState(store)
         key = pickle_key(bot_token)
@@ -114,6 +115,7 @@ class CryptoRuntime:
             store=state,
             account=account,
             pickle_key=key,
+            device_id=device_id,
             pins={
                 tag: DeviceKeys(
                     user_id=device["user_id"],
@@ -144,6 +146,16 @@ class CryptoRuntime:
                 one_time_keys=await self.mint_otks(OTK_TARGET_COUNT - otk_count)
             )
 
+    async def restore_since(self) -> str | None:
+        """Where the deploy's `/sync` stream stood when the listener last wrote it, so a restart
+        resumes its own head instead of full-syncing the account. The stream cursor ask — core's
+        seam holds an int — is why this lives in surface state at all."""
+        raw = await self._store.since()
+        return raw.decode() if raw is not None else None
+
+    async def save_since(self, since: str) -> None:
+        await self._store.save_since(since.encode())
+
     async def mint_otks(self, count: int) -> dict[str, str]:
         """A batch of one-time keys for the server: minted, published, and the account re-pickled
         in one step, since an OTK claimed after a crash must decrypt to what the pickle says."""
@@ -159,15 +171,17 @@ class CryptoRuntime:
     def _signed_device_keys(self, bot_id: str) -> dict[str, object]:
         payload: dict[str, object] = {
             "user_id": bot_id,
-            "device_id": DEVICE_ID,
+            "device_id": self.device_id,
             "algorithms": [OLM_ALGORITHM, MEGOLM_ALGORITHM],
             "keys": {
-                f"curve25519:{DEVICE_ID}": self.curve25519,
-                f"ed25519:{DEVICE_ID}": self.ed25519,
+                f"curve25519:{self.device_id}": self.curve25519,
+                f"ed25519:{self.device_id}": self.ed25519,
             },
         }
         signature = self._account.sign(canonical_json(payload))
-        payload["signatures"] = {bot_id: {f"ed25519:{DEVICE_ID}": signature.to_base64()}}
+        payload["signatures"] = {
+            bot_id: {f"ed25519:{self.device_id}": signature.to_base64()}
+        }
         return payload
 
     async def pin(
@@ -352,7 +366,7 @@ class OutboundCrypto:
             "sender_key": self.runtime.curve25519,
             "ciphertext": group.encrypt(canonical_json(payload)).to_base64(),
             "session_id": session_id,
-            "device_id": DEVICE_ID,
+            "device_id": self.runtime.device_id,
         }
         return await self.client.send(
             room_id, txn_id, event, event_type=ENCRYPTED_MESSAGE_TYPE

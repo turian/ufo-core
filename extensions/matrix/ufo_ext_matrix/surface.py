@@ -25,7 +25,11 @@ from ufo.sdk.surfaces import (
     mint_marker,
     writeback_says_nothing,
 )
-from ufo_ext_matrix.client import MatrixApiError, MatrixClient, deploy_settings
+from ufo_ext_matrix.client import (
+    MatrixApiError,
+    MatrixClient,
+    deploy_settings,
+)
 from ufo_ext_matrix.crypto import (
     E2EE_AVAILABLE,
     CryptoRuntime,
@@ -93,15 +97,20 @@ def matrix_boot(store: BlobStore) -> None:
     _runtime = None
 
 
-async def e2ee_runtime() -> CryptoRuntime | None:
+async def e2ee_runtime(client: MatrixClient) -> CryptoRuntime | None:
     """The process's one crypto identity, built once on first use and awaited by everything
-    after. None is a plain surface: no backend installed, or no fleet store stashed."""
+    after; the first caller's client is the one that answers who the token is — user and device,
+    since the keys must upload under the device the token is bound to. None is a plain surface:
+    no backend installed, or no fleet store stashed."""
     global _runtime
     if not E2EE_AVAILABLE or _boot_store is None:
         return None
     if _runtime is None:
         settings = deploy_settings()
-        _runtime = asyncio.create_task(CryptoRuntime.load(_boot_store, settings.bot_token))
+        whoami = await client.whoami()
+        _runtime = asyncio.create_task(
+            CryptoRuntime.load(_boot_store, settings.bot_token, whoami.device_id)
+        )
     return await _runtime
 
 
@@ -161,7 +170,7 @@ async def _send_room_message(
     """One turn message into its room: megolm where the room is encrypted, plaintext where it is
     not, and never plaintext into an encrypted room — a room that reads encrypted with no
     runtime to speak it skips the message instead of leaking it."""
-    runtime = await e2ee_runtime()
+    runtime = await e2ee_runtime(client)
     if runtime is None:
         if await client.room_encryption(room_id) == MEGOLM_ALGORITHM:
             _warn_e2ee_unavailable()
@@ -259,7 +268,7 @@ async def matrix_attach(ctx: SurfaceContext, writeback: Writeback, reply_ref: st
         return
     client = MatrixClient(deploy_settings())
     try:
-        runtime = await e2ee_runtime()
+        runtime = await e2ee_runtime(client)
         room_id = writeback.queue_key
         if runtime is None and await client.room_encryption(room_id) == MEGOLM_ALGORITHM:
             _warn_e2ee_unavailable()
@@ -342,11 +351,14 @@ async def matrix_listener(listener: SurfaceListenerContext) -> None:
     settings = deploy_settings()
     client = MatrixClient(settings)
     try:
-        bot_id = await client.whoami()
-        runtime = await e2ee_runtime()
+        whoami = await client.whoami()
+        bot_id = whoami.user_id
+        runtime = await e2ee_runtime(client)
         watches: dict[str, _RoomWatch] = {}
         rejoined_until: dict[str, datetime] = {}
         since: str | None = None
+        if runtime is not None:
+            since = await runtime.restore_since()
         while True:
             try:
                 batch = await client.sync(since)
@@ -386,6 +398,8 @@ async def matrix_listener(listener: SurfaceListenerContext) -> None:
                 continue
             watches = observed
             since = batch.next_batch
+            if runtime is not None:
+                await runtime.save_since(since)
     except Exception as error:
         log_error("matrix.listener_bailed", error_class=type(error).__name__)
         raise

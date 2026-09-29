@@ -30,7 +30,7 @@ def _store(tmp_path: Path) -> FleetBlobStore:
 
 
 async def _runtime(tmp_path: Path, token: str = BOT_TOKEN) -> CryptoRuntime:
-    return await CryptoRuntime.load(_store(tmp_path), token)
+    return await CryptoRuntime.load(_store(tmp_path), token, device_id="UFO")
 
 
 async def _share_room_key(
@@ -212,12 +212,18 @@ async def test_state_roundtrips_every_blob(tmp_path: Path) -> None:
     await state.save_olm_sessions("sender+key/=", b"olm-envelope")
     await state.save_inbound_session("!room:hs.org", "session+id=", b"inbound-pickle")
     await state.save_pins(b"pins-json")
+    await state.save_since(b"s12_34_0")
     reloaded = CryptoState(_store(tmp_path))
     assert await reloaded.account() == b"account-pickle"
     assert await reloaded.olm_sessions("sender+key/=") == b"olm-envelope"
     assert await reloaded.inbound_session("!room:hs.org", "session+id=") == b"inbound-pickle"
     assert await reloaded.pins() == b"pins-json"
     assert await reloaded.olm_sessions("other") is None
+    runtime = await _runtime(tmp_path / "runtime")
+    assert await runtime.restore_since() is None
+    await runtime.save_since("s13_0")
+    restarted = await CryptoRuntime.load(_store(tmp_path / "runtime"), BOT_TOKEN, "UFO")
+    assert await restarted.restore_since() == "s13_0"
 
 
 async def test_attachments_travel_encrypted_and_refuse_tampering() -> None:

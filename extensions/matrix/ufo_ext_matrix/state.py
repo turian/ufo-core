@@ -5,6 +5,7 @@ from ufo.sdk.surfaces import BlobStore
 STATE_PREFIX = "surface/matrix/matrix-e2ee"
 ACCOUNT_KEY = f"{STATE_PREFIX}/account"
 PINS_KEY = f"{STATE_PREFIX}/pins"
+SINCE_KEY = f"{STATE_PREFIX}/since"
 
 
 def _olm_key(sender_key: str) -> str:
@@ -46,6 +47,12 @@ class CryptoState:
 
     async def save_pins(self, blob: bytes) -> None:
         await self._store.put(PINS_KEY, blob)
+
+    async def since(self) -> bytes | None:
+        return await self._read(SINCE_KEY)
+
+    async def save_since(self, since: bytes) -> None:
+        await self._store.put(SINCE_KEY, since)
 
     async def _read(self, key: str) -> bytes | None:
         try:
