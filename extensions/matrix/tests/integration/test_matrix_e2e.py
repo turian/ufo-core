@@ -120,6 +120,7 @@ class MatrixUser:
 
     user_id: str
     token: str
+    device_id: str
     homeserver: str
     client_: MatrixClient | None = None
     sync_token: str | None = None
@@ -167,7 +168,7 @@ async def _register_user(url: str, username: str) -> tuple[str, str]:
         )
         post.raise_for_status()
         payload = post.json()
-    return payload["user_id"], payload["access_token"]
+    return payload["user_id"], payload["access_token"], payload["device_id"]
 
 
 @pytest.fixture
@@ -461,7 +462,7 @@ class MemberCrypto:
     @classmethod
     async def start(cls, user: MatrixUser, bot_user_id: str, root: Path) -> "MemberCrypto":
         runtime = await CryptoRuntime.load(
-            FleetBlobStore(backend=FilesystemBlobStore(root=root)), user.token
+            FleetBlobStore(backend=FilesystemBlobStore(root=root)), user.token, user.device_id
         )
         await runtime.publish(user.client(), user.user_id, 0)
         return cls(user, bot_user_id, runtime)
