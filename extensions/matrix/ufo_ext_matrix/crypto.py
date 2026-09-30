@@ -160,7 +160,7 @@ class CryptoRuntime:
             # to show for it. vodozemac mints one-time key ids from a per-account counter
             # starting at zero, so a full fresh batch overwrites the stale entries exactly.
             await client.keys_upload(
-                one_time_keys=await self.mint_otks(OTK_TARGET_COUNT)
+                one_time_keys=await self.mint_otks(OTK_TARGET_COUNT, bot_id)
             )
             self._force_otk_rotate = False
             self._otk_uploaded_at = now
@@ -170,7 +170,7 @@ class CryptoRuntime:
                 return
             self._otk_uploaded_at = now
             await client.keys_upload(
-                one_time_keys=await self.mint_otks(OTK_TARGET_COUNT - otk_count)
+                one_time_keys=await self.mint_otks(OTK_TARGET_COUNT - otk_count, bot_id)
             )
 
     async def restore_since(self) -> str | None:
@@ -189,14 +189,24 @@ class CryptoRuntime:
     async def save_since(self, since: str) -> None:
         await self._store.save_since(since.encode())
 
-    async def mint_otks(self, count: int) -> dict[str, str]:
+    async def mint_otks(self, count: int, bot_id: str) -> dict[str, object]:
         """A batch of one-time keys for the server: minted, published, and the account re-pickled
-        in one step, since an OTK claimed after a crash must decrypt to what the pickle says."""
+        in one step, since an OTK claimed after a crash must decrypt to what the pickle says.
+        Each key uploads as a signed object — `{"key": ...}` with the device's ed25519
+        signature — because that is what the spec requires and what strict clients
+        (matrix-js-sdk's rust crypto) parse; a bare string uploads, echoes back through
+        /keys/claim verbatim, and lands as `invalid type: string, expected struct SignedKey`
+        on every client that validates, silently excluding this device from every share."""
         self._account.generate_one_time_keys(count)
-        keys = {
-            f"signed_curve25519:{key_id}": key.to_base64()
-            for key_id, key in self._account.one_time_keys.items()
-        }
+        keys: dict[str, object] = {}
+        for key_id, key in self._account.one_time_keys.items():
+            name = f"signed_curve25519:{key_id}"
+            obj: dict[str, object] = {"key": key.to_base64()}
+            signature = self._account.sign(canonical_json(obj))
+            obj["signatures"] = {
+                bot_id: {f"ed25519:{self.device_id}": signature.to_base64()}
+            }
+            keys[name] = obj
         self._account.mark_keys_as_published()
         await self._store.save_account(self._account.pickle(self._pickle_key).encode())
         return keys
