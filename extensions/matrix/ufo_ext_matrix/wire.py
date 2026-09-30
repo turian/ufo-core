@@ -297,9 +297,7 @@ def _apply_state_event(state: RoomState, event: SyncEvent) -> RoomState:
             return state if alias is None else dataclasses_replace(state, alias=alias)
         case "m.room.encryption":
             algorithm = _string_content(event, "algorithm")
-            return (
-                state if algorithm is None else dataclasses_replace(state, encryption=algorithm)
-            )
+            return state if algorithm is None else dataclasses_replace(state, encryption=algorithm)
         case _:
             return state
 

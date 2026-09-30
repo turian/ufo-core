@@ -141,21 +141,15 @@ async def _consume_to_device(runtime: CryptoRuntime, events: tuple[ToDeviceEvent
             or not isinstance(addressed.get("body"), str)
         ):
             continue
-        payload = await runtime.decrypt_olm(
-            sender_key, addressed["type"], addressed["body"]
-        )
+        payload = await runtime.decrypt_olm(sender_key, addressed["type"], addressed["body"])
         if payload is None:
             warn("matrix.to_device_undecryptable", sender_key=sender_key)
             continue
-        if payload.get("type") == ROOM_KEY_EVENT_TYPE and isinstance(
-            payload.get("content"), dict
-        ):
+        if payload.get("type") == ROOM_KEY_EVENT_TYPE and isinstance(payload.get("content"), dict):
             await runtime.store_room_key(payload["content"])
 
 
-async def _room_encrypted(
-    runtime: CryptoRuntime, client: MatrixClient, room_id: str
-) -> bool:
+async def _room_encrypted(runtime: CryptoRuntime, client: MatrixClient, room_id: str) -> bool:
     if room_id in runtime.encrypted_rooms:
         return True
     algorithm = await client.room_encryption(room_id)
@@ -451,9 +445,7 @@ async def matrix_listener(listener: SurfaceListenerContext) -> None:
                 await runtime.save_since(since)
                 await runtime.save_watches(_watches_blob(observed))
     except Exception as error:
-        log_error(
-            "matrix.listener_bailed", error_class=type(error).__name__, detail=str(error)
-        )
+        log_error("matrix.listener_bailed", error_class=type(error).__name__, detail=str(error))
         raise
     finally:
         await client.aclose()

@@ -478,9 +478,7 @@ class MemberCrypto:
             devices = await self.user.client().keys_query((self.bot_user_id,))
             return bool(devices.get(self.bot_user_id))
 
-        await _wait_for(
-            _bot_keys_visible, "the bot's device keys are published", TURN_TIMEOUT_S
-        )
+        await _wait_for(_bot_keys_visible, "the bot's device keys are published", TURN_TIMEOUT_S)
         devices = (await self.user.client().keys_query((self.bot_user_id,)))[self.bot_user_id]
         payload = {
             "type": ROOM_KEY_EVENT_TYPE,
@@ -504,16 +502,14 @@ class MemberCrypto:
             one_time = claimed.get(self.bot_user_id, {}).get(device_id)
             if not one_time:
                 continue
-            session = self.runtime.olm_session_to(
-                device.curve25519, next(iter(one_time.values()))
-            )
+            key_obj = next(iter(one_time.values()))
+            key = key_obj["key"] if isinstance(key_obj, dict) else key_obj
+            session = self.runtime.olm_session_to(device.curve25519, key)
             tag, raw = session.encrypt(canonical_json(payload)).to_parts()
             messages.setdefault(self.bot_user_id, {})[device_id] = {
                 "algorithm": OLM_ALGORITHM,
                 "sender_key": self.runtime.curve25519,
-                "ciphertext": {
-                    device.curve25519: {"type": tag, "body": b64encode(raw).decode()}
-                },
+                "ciphertext": {device.curve25519: {"type": tag, "body": b64encode(raw).decode()}},
             }
         await self.user.client().send_to_device(
             ENCRYPTED_MESSAGE_TYPE, f"member-key-{group.session_id}", messages
@@ -702,9 +698,7 @@ async def test_a_claimed_room_is_proven_and_replies_end_to_end(stack: Stack) -> 
     await _wait_for(_replied, "the agent's reply landed in the room", TURN_TIMEOUT_S)
 
 
-async def test_an_encrypted_room_round_trips_end_to_end(
-    stack: Stack, tmp_path: Path
-) -> None:
+async def test_an_encrypted_room_round_trips_end_to_end(stack: Stack, tmp_path: Path) -> None:
     """The full E2EE chain against a real homeserver: the member's device mints the room's
     megolm session and olm's its key to the bot's published device, the listener decrypts the
     proof and the message, the reply goes back megolm-encrypted, and the member's device opens
@@ -751,9 +745,7 @@ async def test_an_encrypted_room_round_trips_end_to_end(
         TURN_TIMEOUT_S,
     )
 
-    await member_crypto.send_encrypted(
-        room_id, "hello", group, "hello from the encrypted room"
-    )
+    await member_crypto.send_encrypted(room_id, "hello", group, "hello from the encrypted room")
 
     async def _decrypted() -> bool:
         return "hi there" in await member_crypto.decrypted_bodies(room_id)

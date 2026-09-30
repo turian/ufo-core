@@ -19,7 +19,7 @@ from ufo_ext_matrix.wire import (
 try:
     import vodozemac
 except ImportError:  # pragma: no cover - the plain build carries no backend
-    vodozemac = None
+    vodozemac = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from vodozemac import Account, Session
@@ -79,7 +79,7 @@ class CryptoRuntime:
         self._pins = pins
         self._refused = set(refused)
         self._olm: dict[str, list[Session]] = {}
-        self._inbound: dict[tuple[str, str], object | None] = {}
+        self._inbound: dict[tuple[str, str], vodozemac.InboundGroupSession | None] = {}
         self.encrypted_rooms: set[str] = set()
         self._published = False
         self._otk_uploaded_at = 0.0
@@ -103,19 +103,13 @@ class CryptoRuntime:
         )
 
     @classmethod
-    async def load(
-        cls, store: BlobStore, bot_token: str, device_id: str
-    ) -> "CryptoRuntime":
+    async def load(cls, store: BlobStore, bot_token: str, device_id: str) -> "CryptoRuntime":
         state = CryptoState(store)
         key = pickle_key(bot_token)
         raw = await state.account()
         rekeyed = False
         try:
-            account = (
-                vodozemac.Account.from_pickle(raw.decode(), key)
-                if raw is not None
-                else None
-            )
+            account = vodozemac.Account.from_pickle(raw.decode(), key) if raw is not None else None
         except vodozemac.PickleException:
             account = None
         if account is None:
@@ -153,9 +147,7 @@ class CryptoRuntime:
         runtime._force_otk_rotate = rekeyed
         return runtime
 
-    async def publish(
-        self, client: MatrixClient, bot_id: str, otk_count: int | None
-    ) -> None:
+    async def publish(self, client: MatrixClient, bot_id: str, otk_count: int | None) -> None:
         """The device the deploy speaks as, made known to the network: identity keys once, and
         one-time keys whenever the server's count runs under target — each claimed OTK is one
         delivery's olm channel, so the pool is what keeps encrypted sends possible."""
@@ -224,9 +216,7 @@ class CryptoRuntime:
             name = f"signed_curve25519:{key_id}"
             obj: dict[str, object] = {"key": key.to_base64()}
             signature = self._account.sign(canonical_json(obj))
-            obj["signatures"] = {
-                bot_id: {f"ed25519:{self.device_id}": signature.to_base64()}
-            }
+            obj["signatures"] = {bot_id: {f"ed25519:{self.device_id}": signature.to_base64()}}
             keys[name] = obj
         self._account.mark_keys_as_published()
         await self._store.save_account(self._account.pickle(self._pickle_key).encode())
@@ -243,14 +233,10 @@ class CryptoRuntime:
             },
         }
         signature = self._account.sign(canonical_json(payload))
-        payload["signatures"] = {
-            bot_id: {f"ed25519:{self.device_id}": signature.to_base64()}
-        }
+        payload["signatures"] = {bot_id: {f"ed25519:{self.device_id}": signature.to_base64()}}
         return payload
 
-    async def pin(
-        self, user_id: str, device_id: str, keys: dict[str, str]
-    ) -> DeviceKeys | None:
+    async def pin(self, user_id: str, device_id: str, keys: dict[str, str]) -> DeviceKeys | None:
         """TOFU on one device: first sight pins its keys, same keys pass, changed keys refuse the
         device from then on — a pinned device never silently becomes another device."""
         tag = f"{user_id}|{device_id}"
@@ -337,9 +323,7 @@ class CryptoRuntime:
         self._note_inbound(room_id, session_id, session)
         return True
 
-    async def decrypt_megolm(
-        self, room_id: str, session_id: str, ciphertext: str
-    ) -> dict | None:
+    async def decrypt_megolm(self, room_id: str, session_id: str, ciphertext: str) -> dict | None:
         session = await self._inbound_session(room_id, session_id)
         if session is None:
             return None
@@ -378,7 +362,9 @@ class CryptoRuntime:
             ).encode(),
         )
 
-    async def _inbound_session(self, room_id: str, session_id: str) -> object | None:
+    async def _inbound_session(
+        self, room_id: str, session_id: str
+    ) -> "vodozemac.InboundGroupSession | None":
         held = self._inbound.get((room_id, session_id))
         if held is not None or (room_id, session_id) in self._inbound:
             return held
@@ -391,7 +377,9 @@ class CryptoRuntime:
         self._note_inbound(room_id, session_id, session)
         return session
 
-    def _note_inbound(self, room_id: str, session_id: str, session: object | None) -> None:
+    def _note_inbound(
+        self, room_id: str, session_id: str, session: "vodozemac.InboundGroupSession | None"
+    ) -> None:
         if len(self._inbound) >= INBOUND_CACHE_LIMIT:
             self._inbound.pop(next(iter(self._inbound)))
         self._inbound[(room_id, session_id)] = session
@@ -440,9 +428,7 @@ class OutboundCrypto:
             "session_id": session_id,
             "device_id": self.runtime.device_id,
         }
-        return await self.client.send(
-            room_id, txn_id, event, event_type=ENCRYPTED_MESSAGE_TYPE
-        )
+        return await self.client.send(room_id, txn_id, event, event_type=ENCRYPTED_MESSAGE_TYPE)
 
     async def _devices(self, room_id: str) -> list[DeviceKeys]:
         members = await self.client.joined_members(room_id)
@@ -498,7 +484,8 @@ class OutboundCrypto:
                     error=type(error).__name__,
                 )
                 continue
-            tag, raw = session.encrypt(canonical_json(room_key)).to_parts()
+            room_key_payload: dict[str, object] = dict(room_key)
+            tag, raw = session.encrypt(canonical_json(room_key_payload)).to_parts()
             messages.setdefault(device.user_id, {})[device.device_id] = {
                 "algorithm": OLM_ALGORITHM,
                 "sender_key": self.runtime.curve25519,
@@ -509,9 +496,7 @@ class OutboundCrypto:
                     }
                 },
             }
-        await self.client.send_to_device(
-            "m.room.encrypted", f"ufo-key-{session_id}", messages
-        )
+        await self.client.send_to_device("m.room.encrypted", f"ufo-key-{session_id}", messages)
 
 
 class MatrixNoDevices(RuntimeError):

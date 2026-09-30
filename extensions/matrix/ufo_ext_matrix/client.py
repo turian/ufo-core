@@ -183,7 +183,7 @@ class MatrixClient:
     async def keys_upload(
         self,
         device_keys: dict[str, object] | None = None,
-        one_time_keys: dict[str, str] | None = None,
+        one_time_keys: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """The device's identity keys and one-time keys to the server: identity once, OTKs on
         every top-up — the pool a sender claims from to open an olm channel to this device."""

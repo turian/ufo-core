@@ -112,7 +112,10 @@ def test_encrypted_room_events_carry_megolm_content() -> None:
     pairs = encrypted_room_events((megolm, olm, plain))
     assert [event.event_id for event, _ in pairs] == ["e1"]
     assert pairs[0][1] == EncryptedContent(
-        algorithm="m.megolm.v1.aes-sha2", ciphertext="AwgA", sender_key="sk1", session_id="sid1",
+        algorithm="m.megolm.v1.aes-sha2",
+        ciphertext="AwgA",
+        sender_key="sk1",
+        session_id="sid1",
         device_id="DEV",
     )
 

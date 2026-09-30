@@ -49,7 +49,9 @@ async def _share_room_key(
             "session_key": group.session_key.to_base64(),
         },
     }
-    (one_time_key,) = (await receiver.mint_otks(1)).values()
+    (one_time_key,) = [
+        k["key"] for k in (await receiver.mint_otks(1, "@2ambot:matrix.org")).values()
+    ]
     session = sender.olm_session_to(receiver.curve25519, one_time_key)
     tag, raw = session.encrypt(canonical_json(payload)).to_parts()
     opened = await receiver.decrypt_olm(sender.curve25519, tag, b64encode(raw).decode())
@@ -122,7 +124,7 @@ async def test_inbound_session_survives_restart(tmp_path: Path) -> None:
 async def test_second_olm_message_opens_on_the_stored_session(tmp_path: Path) -> None:
     bot = await _runtime(tmp_path / "bot")
     member = await _runtime(tmp_path / "member")
-    (one_time_key,) = (await bot.mint_otks(1)).values()
+    (one_time_key,) = [k["key"] for k in (await bot.mint_otks(1, "@2ambot:matrix.org")).values()]
     session = member.olm_session_to(bot.curve25519, one_time_key)
     tag, raw = session.encrypt(canonical_json({"n": 1})).to_parts()
     assert await bot.decrypt_olm(member.curve25519, tag, b64encode(raw).decode()) == {"n": 1}
@@ -134,18 +136,11 @@ async def test_undecryptable_traffic_answers_none(tmp_path: Path) -> None:
     bot = await _runtime(tmp_path)
     group = await _share_room_key(await _runtime(tmp_path / "member"), bot, ROOM_ID)
     assert await bot.decrypt_megolm(ROOM_ID, "unknown-session", "AwgA") is None
-    assert (
-        await bot.decrypt_megolm(ROOM_ID, group.session_id, "not-a-message") is None
-    )
+    assert await bot.decrypt_megolm(ROOM_ID, group.session_id, "not-a-message") is None
     stranger = await _runtime(tmp_path / "stranger")
-    (one_time_key,) = (await bot.mint_otks(1)).values()
+    (one_time_key,) = [k["key"] for k in (await bot.mint_otks(1, "@2ambot:matrix.org")).values()]
     tag, raw = stranger.olm_session_to(bot.curve25519, one_time_key).encrypt(b"x").to_parts()
-    assert (
-        await bot.decrypt_olm(
-            "no-such-sender-key", tag, b64encode(raw).decode()
-        )
-        is None
-    )
+    assert await bot.decrypt_olm("no-such-sender-key", tag, b64encode(raw).decode()) is None
 
 
 async def test_pin_tofu_refuses_changed_keys(tmp_path: Path) -> None:
@@ -193,7 +188,7 @@ async def test_to_device_room_key_lands_before_the_room_event(tmp_path: Path) ->
             "session_key": group.session_key.to_base64(),
         },
     }
-    (one_time_key,) = (await bot.mint_otks(1)).values()
+    (one_time_key,) = [k["key"] for k in (await bot.mint_otks(1, "@2ambot:matrix.org")).values()]
     session = member.olm_session_to(bot.curve25519, one_time_key)
     tag, raw = session.encrypt(canonical_json(payload)).to_parts()
     event = ToDeviceEvent.model_validate(
@@ -242,9 +237,7 @@ async def test_attachments_travel_encrypted_and_refuse_tampering() -> None:
     ciphertext, file_dict = encrypt_attachment(data)
     assert ciphertext != data
     assert decrypt_attachment(ciphertext, file_dict) == data
-    file_dict["hashes"]["sha256"] = (
-        b64encode(b"\x00" * 32).rstrip(b"=").decode()
-    )
+    file_dict["hashes"]["sha256"] = b64encode(b"\x00" * 32).rstrip(b"=").decode()
     with pytest.raises(ValueError):
         decrypt_attachment(ciphertext, file_dict)
     with pytest.raises(KeyError):
