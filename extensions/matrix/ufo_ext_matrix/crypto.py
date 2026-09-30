@@ -121,6 +121,11 @@ class CryptoRuntime:
                 await state.clear()
                 warn("matrix.crypto_rekeyed", device_id=device_id)
                 rekeyed = True
+            # A fresh account under an existing device id inherits the server's
+            # one-time key pool minted by the dead accounts before it. The pool
+            # count describes those foreign keys, so the top-up guard would
+            # happily skip and leave every handshake drawing dead keys.
+            rekeyed = True
             account = vodozemac.Account()
             await state.save_account(account.pickle(key).encode())
         envelope = json.loads(pins) if (pins := await state.pins()) else {}
