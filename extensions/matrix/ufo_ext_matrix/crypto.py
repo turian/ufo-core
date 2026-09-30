@@ -291,7 +291,15 @@ class CryptoRuntime:
             return False
         if await self._inbound_session(room_id, session_id) is not None:
             return False
-        session = vodozemac.InboundGroupSession(vodozemac.SessionKey(session_key))
+        try:
+            session = vodozemac.InboundGroupSession(vodozemac.SessionKey(session_key))
+        except vodozemac.SessionKeyDecodeException:
+            # matrix-js-sdk's rust crypto shares session keys in the exported
+            # form (220 chars, carries the ratchet position) rather than the
+            # initial form (306 chars) libolm and vodozemac mint natively.
+            session = vodozemac.InboundGroupSession.import_session(
+                vodozemac.ExportedSessionKey(session_key)
+            )
         await self._store.save_inbound_session(
             room_id, session_id, session.pickle(self._pickle_key).encode()
         )
