@@ -26,6 +26,11 @@ if TYPE_CHECKING:
 
 E2EE_AVAILABLE = vodozemac is not None
 OTK_TARGET_COUNT = 32
+# A re-keyed or fresh account overwrites the whole server-side pool its dead
+# predecessors left under the same device id; their counters may have run deep
+# (every failed handshake consumed a slot), so the rotation batch is sized to
+# drown whatever depth they reached rather than just the target.
+OTK_REKEY_ROTATION_COUNT = 128
 OTK_TOPUP_COOLDOWN_SECONDS = 30.0
 OLM_PREKEY_TYPE = 0
 INBOUND_CACHE_LIMIT = 512
@@ -163,9 +168,12 @@ class CryptoRuntime:
             # one-time key the dead accounts minted under this device, and a claim draws
             # those at random — the olm handshake then fails with nothing on either side
             # to show for it. vodozemac mints one-time key ids from a per-account counter
-            # starting at zero, so a full fresh batch overwrites the stale entries exactly.
+            # starting at zero, so a fresh batch overwrites the stale entries exactly —
+            # and the batch must be at least as long as the pool it replaces, since
+            # earlier generations' counters may have run past this one's.
+            count = max(OTK_TARGET_COUNT, (otk_count or 0) + 8, OTK_REKEY_ROTATION_COUNT)
             await client.keys_upload(
-                one_time_keys=await self.mint_otks(OTK_TARGET_COUNT, bot_id)
+                one_time_keys=await self.mint_otks(count, bot_id)
             )
             self._force_otk_rotate = False
             self._otk_uploaded_at = now
