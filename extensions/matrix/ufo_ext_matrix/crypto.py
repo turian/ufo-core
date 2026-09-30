@@ -484,7 +484,8 @@ class OutboundCrypto:
             if not one_time:
                 warn("matrix.share_skipped", user_id=device.user_id, device_id=device.device_id)
                 continue
-            key = next(iter(one_time.values()))
+            key_obj = next(iter(one_time.values()))
+            key = key_obj["key"] if isinstance(key_obj, dict) else key_obj
             session = self.runtime.olm_session_to(device.curve25519, key)
             tag, raw = session.encrypt(canonical_json(room_key)).to_parts()
             messages.setdefault(device.user_id, {})[device.device_id] = {
