@@ -197,29 +197,6 @@ class _RoomWatch:
     history: tuple[AmbientMessage, ...] = ()
 
 
-def _watches_blob(watches: dict[str, _RoomWatch]) -> bytes:
-    return json.dumps(
-        {
-            room_id: {
-                "state": {
-                    "id": watch.state.id,
-                    "members": watch.state.members,
-                    "displaynames": watch.state.displaynames,
-                    "name": watch.state.name,
-                    "alias": watch.state.alias,
-                    "creator": watch.state.creator,
-                    "encryption": watch.state.encryption,
-                },
-                "history": [
-                    {"speaker": entry.speaker, "text": entry.text, "own": entry.own}
-                    for entry in watch.history
-                ],
-            }
-            for room_id, watch in watches.items()
-        }
-    ).encode()
-
-
 def _watches_from_blob(blob: bytes) -> dict[str, _RoomWatch]:
     raw = json.loads(blob)
     return {
@@ -442,7 +419,28 @@ async def matrix_listener(listener: SurfaceListenerContext) -> None:
             since = batch.next_batch
             if runtime is not None:
                 await runtime.save_since(since)
-                await runtime.save_watches(_watches_blob(observed))
+                await runtime.save_watches(
+                    json.dumps(
+                        {
+                            room_id: {
+                                "state": {
+                                    "id": watch.state.id,
+                                    "members": watch.state.members,
+                                    "displaynames": watch.state.displaynames,
+                                    "name": watch.state.name,
+                                    "alias": watch.state.alias,
+                                    "creator": watch.state.creator,
+                                    "encryption": watch.state.encryption,
+                                },
+                                "history": [
+                                    {"speaker": entry.speaker, "text": entry.text, "own": entry.own}
+                                    for entry in watch.history
+                                ],
+                            }
+                            for room_id, watch in observed.items()
+                        }
+                    ).encode()
+                )
     except Exception as error:
         log_error("matrix.listener_bailed", error_class=type(error).__name__, detail=str(error))
         raise
