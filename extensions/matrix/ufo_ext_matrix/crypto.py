@@ -78,6 +78,7 @@ class CryptoRuntime:
         self.encrypted_rooms: set[str] = set()
         self._published = False
         self._otk_uploaded_at = 0.0
+        self._force_otk_rotate = False
 
     @property
     def curve25519(self) -> str:
@@ -103,6 +104,7 @@ class CryptoRuntime:
         state = CryptoState(store)
         key = pickle_key(bot_token)
         raw = await state.account()
+        rekeyed = False
         try:
             account = (
                 vodozemac.Account.from_pickle(raw.decode(), key)
@@ -118,10 +120,11 @@ class CryptoRuntime:
                 # sessions, pins, and cursor of the old device mean nothing.
                 await state.clear()
                 warn("matrix.crypto_rekeyed", device_id=device_id)
+                rekeyed = True
             account = vodozemac.Account()
             await state.save_account(account.pickle(key).encode())
         envelope = json.loads(pins) if (pins := await state.pins()) else {}
-        return cls(
+        runtime = cls(
             store=state,
             account=account,
             pickle_key=key,
@@ -137,6 +140,8 @@ class CryptoRuntime:
             },
             refused=frozenset(envelope.get("refused", ())),
         )
+        runtime._force_otk_rotate = rekeyed
+        return runtime
 
     async def publish(
         self, client: MatrixClient, bot_id: str, otk_count: int | None
@@ -148,6 +153,18 @@ class CryptoRuntime:
             await client.keys_upload(device_keys=self._signed_device_keys(bot_id))
             self._published = True
         now = time.monotonic()
+        if self._force_otk_rotate:
+            # The device kept its id but the account is new: the server still holds every
+            # one-time key the dead accounts minted under this device, and a claim draws
+            # those at random — the olm handshake then fails with nothing on either side
+            # to show for it. vodozemac mints one-time key ids from a per-account counter
+            # starting at zero, so a full fresh batch overwrites the stale entries exactly.
+            await client.keys_upload(
+                one_time_keys=await self.mint_otks(OTK_TARGET_COUNT)
+            )
+            self._force_otk_rotate = False
+            self._otk_uploaded_at = now
+            return
         if otk_count is not None and otk_count < OTK_TARGET_COUNT:
             if now - self._otk_uploaded_at < OTK_TOPUP_COOLDOWN_SECONDS:
                 return
