@@ -1,6 +1,7 @@
 from base64 import b64decode, b64encode, urlsafe_b64decode, urlsafe_b64encode
 from hashlib import sha256
 from os import urandom
+from typing import Any
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
@@ -30,7 +31,7 @@ def encrypt_attachment(data: bytes) -> tuple[bytes, dict[str, object]]:
     )
 
 
-def decrypt_attachment(ciphertext: bytes, file: dict[str, object]) -> bytes:
+def decrypt_attachment(ciphertext: bytes, file: dict[str, Any]) -> bytes:
     """The inverse: the file dict a decrypted megolm payload carried. A hash mismatch raises —
     a tampered or truncated attachment never reaches a turn as bytes."""
     key = urlsafe_b64decode(f"{file['key']['k']}===")

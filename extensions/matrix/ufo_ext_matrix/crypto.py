@@ -26,10 +26,8 @@ if TYPE_CHECKING:
 
 E2EE_AVAILABLE = vodozemac is not None
 OTK_TARGET_COUNT = 32
-# A re-keyed or fresh account overwrites the whole server-side pool its dead
-# predecessors left under the same device id; their counters may have run deep
-# (every failed handshake consumed a slot), so the rotation batch is sized to
-# drown whatever depth they reached rather than just the target.
+# Sized to drown the dead keys a re-keyed device inherits, however deep the
+# predecessors' counters ran.
 OTK_REKEY_ROTATION_COUNT = 128
 OTK_TOPUP_COOLDOWN_SECONDS = 30.0
 OLM_PREKEY_TYPE = 0
@@ -113,18 +111,12 @@ class CryptoRuntime:
         except vodozemac.PickleException:
             account = None
         if account is None:
+            # The device keeps its id; the dead account's sessions, pins, cursor, and
+            # server-side one-time keys mean nothing.
+            rekeyed = True
             if raw is not None:
-                # The pickle no longer opens under this deploy's key: the token was rotated or
-                # the state was written by another deploy. The device is gone — re-key, and the
-                # sessions, pins, and cursor of the old device mean nothing.
                 await state.clear()
                 warn("matrix.crypto_rekeyed", device_id=device_id)
-                rekeyed = True
-            # A fresh account under an existing device id inherits the server's
-            # one-time key pool minted by the dead accounts before it. The pool
-            # count describes those foreign keys, so the top-up guard would
-            # happily skip and leave every handshake drawing dead keys.
-            rekeyed = True
             account = vodozemac.Account()
             await state.save_account(account.pickle(key).encode())
         envelope = json.loads(pins) if (pins := await state.pins()) else {}
@@ -156,13 +148,8 @@ class CryptoRuntime:
             self._published = True
         now = time.monotonic()
         if self._force_otk_rotate:
-            # The account is new but the device kept its id, so the server's pool
-            # for this device still holds every one-time key the dead accounts
-            # minted. Their id counters started at random offsets, so no re-upload
-            # can overwrite them — claims will draw dead keys until the pool
-            # drains. There is no API to clear it. The honest fix is a new device
-            # (a fresh token from /login), which starts an empty pool; until then
-            # most handshakes fail and this warn is the only trace.
+            # The pool holds the dead accounts' keys at random offsets; nothing
+            # clears them. The fix: /login a fresh device.
             warn(
                 "matrix.crypto_stale_otk_pool",
                 device_id=self.device_id,
@@ -311,9 +298,8 @@ class CryptoRuntime:
         try:
             session = vodozemac.InboundGroupSession(vodozemac.SessionKey(session_key))
         except vodozemac.SessionKeyDecodeException:
-            # matrix-js-sdk's rust crypto shares session keys in the exported
-            # form (220 chars, carries the ratchet position) rather than the
-            # initial form (306 chars) libolm and vodozemac mint natively.
+            # js-sdk's rust crypto shares the exported form (220 chars), not
+            # the initial form (306) vodozemac mints.
             session = vodozemac.InboundGroupSession.import_session(
                 vodozemac.ExportedSessionKey(session_key)
             )

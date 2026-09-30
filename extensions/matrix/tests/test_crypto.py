@@ -36,9 +36,7 @@ async def _runtime(tmp_path: Path, token: str = BOT_TOKEN) -> CryptoRuntime:
 async def _share_room_key(
     sender: CryptoRuntime, receiver: CryptoRuntime, room_id: str
 ) -> vodozemac.GroupSession:
-    """The member side of the protocol, over the same primitives the wire carries: one megolm
-    session minted, its key olm'd to the receiver's claimed one-time key, the receiver opening
-    it and keeping the session."""
+    """The member side of the protocol, over the same primitives the wire carries."""
     group = vodozemac.GroupSession()
     payload = {
         "type": ROOM_KEY_EVENT_TYPE,

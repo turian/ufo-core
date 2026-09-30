@@ -162,9 +162,8 @@ async def _room_encrypted(runtime: CryptoRuntime, client: MatrixClient, room_id:
 async def _send_room_message(
     client: MatrixClient, room_id: str, txn_id: str, payload: dict[str, object]
 ) -> str:
-    """One turn message into its room: megolm where the room is encrypted, plaintext where it is
-    not, and never plaintext into an encrypted room — a room that reads encrypted with no
-    runtime to speak it skips the message instead of leaking it."""
+    """One turn message into its room: megolm where the room is encrypted, plaintext where it
+    is not — and never plaintext into an encrypted room."""
     runtime = await e2ee_runtime(client)
     if runtime is None:
         if await client.room_encryption(room_id) == MEGOLM_ALGORITHM:

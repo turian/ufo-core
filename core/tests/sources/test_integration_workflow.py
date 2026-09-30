@@ -49,7 +49,7 @@ def test_the_image_pull_runs_beside_the_whole_build_prefix() -> None:
     steps = _steps()
     start = _index(steps, name=PULL_START)
     join = _index(steps, name=PULL_JOIN)
-    assert steps[start - 1] == {"run": "uv sync"}
+    assert steps[start - 1] == {"run": "uv sync --extra matrix-e2ee"}
     assert join == _index(steps, run=TESTS) - 1
     assert '>"$RUNNER_TEMP/sandbox-pull.log" 2>&1 &' in steps[start]["run"]
     assert 'echo "SANDBOX_PULL_PID=$!" >>"$GITHUB_ENV"' in steps[start]["run"]

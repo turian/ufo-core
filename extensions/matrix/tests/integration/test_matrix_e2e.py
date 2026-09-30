@@ -450,9 +450,8 @@ async def stack(
 
 @dataclass
 class MemberCrypto:
-    """The room's other end as a real client — the member device that encrypts: its own Olm
-    identity over its own store, driving the same MatrixClient and the same to-device consumer
-    the surface drives, so both ends of the room are the production code."""
+    """The room's other end as a real client: the member device that encrypts, over its own
+    Olm identity and store, driving the same MatrixClient and to-device consumer."""
 
     user: MatrixUser
     bot_user_id: str
@@ -699,10 +698,8 @@ async def test_a_claimed_room_is_proven_and_replies_end_to_end(stack: Stack) -> 
 
 
 async def test_an_encrypted_room_round_trips_end_to_end(stack: Stack, tmp_path: Path) -> None:
-    """The full E2EE chain against a real homeserver: the member's device mints the room's
-    megolm session and olm's its key to the bot's published device, the listener decrypts the
-    proof and the message, the reply goes back megolm-encrypted, and the member's device opens
-    it — while the raw wire carries no plaintext of either side."""
+    """The full E2EE chain against a real homeserver, both directions, with the raw wire
+    carrying no plaintext of either side."""
     script = stack.seed
     room_id = await _create_room(stack.member, encrypted=True)
     stack.scripted.room_id = room_id
