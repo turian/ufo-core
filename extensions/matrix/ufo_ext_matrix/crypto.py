@@ -164,20 +164,28 @@ class CryptoRuntime:
             self._published = True
         now = time.monotonic()
         if self._force_otk_rotate:
-            # The device kept its id but the account is new: the server still holds every
-            # one-time key the dead accounts minted under this device, and a claim draws
-            # those at random — the olm handshake then fails with nothing on either side
-            # to show for it. vodozemac mints one-time key ids from a per-account counter
-            # starting at zero, so a fresh batch overwrites the stale entries exactly —
-            # and the batch must be at least as long as the pool it replaces, since
-            # earlier generations' counters may have run past this one's.
-            count = max(OTK_TARGET_COUNT, (otk_count or 0) + 8, OTK_REKEY_ROTATION_COUNT)
-            await client.keys_upload(
-                one_time_keys=await self.mint_otks(count, bot_id)
+            # The account is new but the device kept its id, so the server's pool
+            # for this device still holds every one-time key the dead accounts
+            # minted. Their id counters started at random offsets, so no re-upload
+            # can overwrite them — claims will draw dead keys until the pool
+            # drains. There is no API to clear it. The honest fix is a new device
+            # (a fresh token from /login), which starts an empty pool; until then
+            # most handshakes fail and this warn is the only trace.
+            warn(
+                "matrix.crypto_stale_otk_pool",
+                device_id=self.device_id,
+                action="rotate the deploy token: /login a fresh device",
             )
-            self._force_otk_rotate = False
-            self._otk_uploaded_at = now
-            return
+        self._force_otk_rotate = False
+        now2 = time.monotonic()
+        if otk_count is not None and otk_count < OTK_TARGET_COUNT:
+            if now2 - self._otk_uploaded_at < OTK_TOPUP_COOLDOWN_SECONDS:
+                return
+            self._otk_uploaded_at = now2
+            await client.keys_upload(
+                one_time_keys=await self.mint_otks(OTK_TARGET_COUNT - otk_count, bot_id)
+            )
+
         if otk_count is not None and otk_count < OTK_TARGET_COUNT:
             if now - self._otk_uploaded_at < OTK_TOPUP_COOLDOWN_SECONDS:
                 return
