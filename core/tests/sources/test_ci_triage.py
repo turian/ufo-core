@@ -162,7 +162,10 @@ def _check_python_suite_runs_in_ten_shards() -> None:
 
 def _check_test_shards_do_not_build_the_workflow_linter() -> None:
     steps = _jobs()["test-shard"]["steps"]
-    assert any(step.get("run") == "uv sync --no-install-package actionlint-py" for step in steps)
+    assert any(
+        step.get("run") == "uv sync --extra matrix-e2ee --no-install-package actionlint-py"
+        for step in steps
+    )
     assert any(
         step.get("run") == 'UV_NO_SYNC=1 make test SHARD="${{ matrix.shard }}"' for step in steps
     )

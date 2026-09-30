@@ -50,7 +50,7 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      - run: uv sync
+      - run: uv sync --extra matrix-e2ee
       - name: Start pulling the published sandbox image
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

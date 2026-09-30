@@ -46,6 +46,7 @@ EXTENSIONS = (
     "openrouter",
     "ufo",
     "debugger",
+    "matrix",
 )
 
 
