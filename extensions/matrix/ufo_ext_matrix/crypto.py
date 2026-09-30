@@ -486,7 +486,18 @@ class OutboundCrypto:
                 continue
             key_obj = next(iter(one_time.values()))
             key = key_obj["key"] if isinstance(key_obj, dict) else key_obj
-            session = self.runtime.olm_session_to(device.curve25519, key)
+            try:
+                session = self.runtime.olm_session_to(device.curve25519, key)
+            except (TypeError, vodozemac.KeyException) as error:
+                # A dead generation's entry (or any malformed echo): this device
+                # loses its copy of the key, the send and its siblings go on.
+                warn(
+                    "matrix.share_session_failed",
+                    user_id=device.user_id,
+                    device_id=device.device_id,
+                    error=type(error).__name__,
+                )
+                continue
             tag, raw = session.encrypt(canonical_json(room_key)).to_parts()
             messages.setdefault(device.user_id, {})[device.device_id] = {
                 "algorithm": OLM_ALGORITHM,
